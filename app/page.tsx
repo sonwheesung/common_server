@@ -2,9 +2,11 @@
 // 관리자 경로는 여기에 링크하지 않는다(크롤링 노출 축소. 실제 방어는 ADMIN_TOKEN fail-closed).
 export default function Home() {
   return (
-    <main style={{ padding: 40, color: '#555' }}>
-      <h1 style={{ fontSize: 18, fontWeight: 600 }}>common server</h1>
-      <p style={{ fontSize: 14 }}>API only.</p>
+    <main className="grid min-h-dvh place-items-center p-10">
+      <div className="text-center">
+        <h1 className="text-base font-semibold tracking-tight">common server</h1>
+        <p className="mt-1 text-sm text-(--color-fg-muted)">API only.</p>
+      </div>
     </main>
   );
 }
