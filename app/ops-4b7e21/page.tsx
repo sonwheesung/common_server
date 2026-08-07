@@ -888,10 +888,22 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
   const [status, setStatus] = useState('');
   const filtered = useMemo(() => (status ? rows.filter((t) => t.status === status) : rows), [rows, status]);
 
+  // 편집 중인 메모. 입력을 제어값으로 들고 있어야 저장 버튼이 "바뀐 게 있는지"를 알 수 있다
+  // (예전엔 defaultValue라 Enter 말고는 값을 꺼낼 방법이 없었다).
+  // 저장에 성공하면 항목을 지워 서버 값(t.reply)으로 되돌아가게 한다.
+  const [memo, setMemo] = useState<Record<string, string>>({});
+  const memoOf = (t: Ticket) => memo[t.id] ?? t.reply ?? '';
+  const dirty = (t: Ticket) => memoOf(t) !== (t.reply ?? '');
+
   const patch = async (id: string, body: Record<string, unknown>, msg: string) => {
     try {
       await api('tickets', { method: 'PATCH', body: JSON.stringify({ id, ...body }) });
       await reload();
+      setMemo((m) => {
+        const next = { ...m };
+        delete next[id];
+        return next;
+      });
       flash(msg);
     } catch (e) {
       onError(String((e as Error).message));
@@ -946,20 +958,27 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
 
           <div className="mt-4 flex flex-wrap gap-2">
             <input
-              placeholder="내부 메모 (Enter로 저장)"
-              defaultValue={t.reply ?? ''}
+              placeholder="내부 메모"
+              value={memoOf(t)}
+              onChange={(e) => setMemo((m) => ({ ...m, [t.id]: e.target.value }))}
               className={`${input} min-w-60 flex-1`}
               maxLength={4000}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') void patch(t.id, { reply: (e.target as HTMLInputElement).value }, '메모를 저장했습니다');
+                if (e.key === 'Enter' && dirty(t)) void patch(t.id, { reply: memoOf(t) }, '메모를 저장했습니다');
               }}
             />
+            <Button
+              variant={dirty(t) ? 'primary' : 'default'}
+              onClick={() => patch(t.id, { reply: memoOf(t) }, '메모를 저장했습니다')}
+              disabled={!dirty(t)}
+            >
+              <Check className="size-4" /> 메모 저장
+            </Button>
             {t.status !== 'resolved' && (
-              <Button onClick={() => patch(t.id, { status: 'resolved' }, '완료 처리했습니다')}>
-                <Check className="size-4" /> 완료 처리
-              </Button>
+              <Button onClick={() => patch(t.id, { status: 'resolved' }, '완료 처리했습니다')}>완료 처리</Button>
             )}
           </div>
+          {dirty(t) && <p className="mt-2 text-xs text-warn">저장하지 않은 메모가 있습니다</p>}
         </article>
       ))}
 
