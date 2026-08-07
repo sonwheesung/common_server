@@ -1,74 +1,91 @@
 @import 'tailwindcss';
 
-/* 관리자 콘솔 디자인 토큰 — shadcn/ui의 시각 언어(중성 회색 + 하나의 강조색 + 낮은 채도)를 따른다.
-   운영 화면이라 화려함보다 **밀도와 판독성**이 우선이다: 상태가 한눈에 갈리고, 위험한 스위치가
-   시각적으로 튀어야 한다.
+/* ── 관리자 콘솔 디자인 토큰 ──
+   운영 화면이라 화려함보다 **판독성**이 우선이다. Vercel·Linear·Stripe 콘솔 계열의 관례를 따른다:
+   밝은 배경 + 흰 카드, 테두리는 최소한으로 얇게, 구분은 주로 여백으로, 숫자는 tabular.
 
-   OKLCH를 쓰는 이유: 명도(L)를 고르게 조절할 수 있어 다크모드 대응 시 색이 탁해지지 않는다. */
+   **밝은 테마가 기본이다.** prefers-color-scheme을 따라가지 않는다 —
+   OS가 다크면 콘솔이 통째로 어두워져 읽기 힘들다는 실제 피드백이 있었다.
+   다크는 사이드바 토글로 **명시적으로 켤 때만** 적용한다(:root[data-theme='dark']).
+
+   OKLCH를 쓰는 이유: 명도(L)를 고르게 조절할 수 있어 대비를 수치로 관리하기 쉽다. */
 @theme {
-  --color-bg: oklch(99% 0 0);
+  /* 배경은 살짝 회색 — 흰 카드가 떠 보이게 한다(순백 위 순백이면 카드 경계가 사라진다) */
+  --color-bg: oklch(97.8% 0.002 250);
   --color-surface: oklch(100% 0 0);
-  --color-muted: oklch(96.5% 0.003 250);
-  --color-border: oklch(92% 0.004 250);
-  --color-fg: oklch(21% 0.01 250);
-  --color-fg-muted: oklch(52% 0.012 250);
+  --color-muted: oklch(96% 0.003 250);
+  --color-border: oklch(90.5% 0.005 250);
 
-  --color-accent: oklch(52% 0.19 264);
+  /* 본문 대비를 넉넉히 — 이전 팔레트는 muted가 너무 옅어 메타 정보가 안 읽혔다 */
+  --color-fg: oklch(20% 0.012 265);
+  --color-fg-muted: oklch(46% 0.012 265);
+
+  --color-accent: oklch(52% 0.2 265);
   --color-accent-fg: oklch(100% 0 0);
-  --color-accent-soft: oklch(96% 0.02 264);
+  --color-accent-soft: oklch(95.5% 0.025 265);
 
-  /* 위험(진입 차단 스위치)·성공·경고 — 운영자가 색만 보고도 심각도를 알 수 있게 */
-  --color-danger: oklch(55% 0.2 25);
-  --color-danger-soft: oklch(96.5% 0.02 25);
-  --color-warn: oklch(62% 0.15 75);
-  --color-ok: oklch(58% 0.14 155);
+  /* 상태색 — 운영자가 색만 보고 심각도를 알 수 있게 */
+  --color-danger: oklch(52% 0.21 27);
+  --color-danger-soft: oklch(96% 0.025 27);
+  --color-warn: oklch(58% 0.14 70);
+  --color-warn-soft: oklch(96.5% 0.04 80);
+  --color-ok: oklch(52% 0.14 155);
+  --color-ok-soft: oklch(96% 0.03 155);
 
-  --radius-card: 0.75rem;
+  --radius-card: 0.625rem;
 }
 
-@media (prefers-color-scheme: dark) {
-  @theme {
-    --color-bg: oklch(17% 0.008 250);
-    --color-surface: oklch(21% 0.009 250);
-    --color-muted: oklch(25% 0.01 250);
-    --color-border: oklch(30% 0.012 250);
-    --color-fg: oklch(96% 0.003 250);
-    --color-fg-muted: oklch(68% 0.012 250);
+/* 다크는 토글로 켤 때만. 대비를 밝은 테마와 맞춰 잡았다(전 팔레트는 너무 탁했다). */
+:root[data-theme='dark'] {
+  --color-bg: oklch(16% 0.008 265);
+  --color-surface: oklch(20.5% 0.01 265);
+  --color-muted: oklch(26% 0.012 265);
+  --color-border: oklch(31% 0.014 265);
+  --color-fg: oklch(97% 0.003 265);
+  --color-fg-muted: oklch(72% 0.014 265);
 
-    --color-accent: oklch(66% 0.17 264);
-    --color-accent-fg: oklch(18% 0.01 264);
-    --color-accent-soft: oklch(28% 0.05 264);
+  --color-accent: oklch(70% 0.16 265);
+  --color-accent-fg: oklch(17% 0.02 265);
+  --color-accent-soft: oklch(29% 0.06 265);
 
-    --color-danger: oklch(66% 0.18 25);
-    --color-danger-soft: oklch(28% 0.06 25);
-    --color-warn: oklch(72% 0.13 75);
-    --color-ok: oklch(68% 0.13 155);
-  }
-}
-
-html {
-  color-scheme: light dark;
+  --color-danger: oklch(70% 0.17 27);
+  --color-danger-soft: oklch(28% 0.07 27);
+  --color-warn: oklch(78% 0.13 75);
+  --color-warn-soft: oklch(29% 0.06 75);
+  --color-ok: oklch(72% 0.14 155);
+  --color-ok-soft: oklch(27% 0.06 155);
 }
 
 body {
   background: var(--color-bg);
   color: var(--color-fg);
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 한글은 자간이 넓어 보이므로 약간 조인다 — 밀도 높은 운영 화면에서 특히 체감된다 */
+  letter-spacing: -0.011em;
 }
 
-/* 입력 요소는 브라우저 기본 스타일이 제각각이라 토큰으로 통일한다 */
+/* 숫자는 어디서나 폭이 고정돼야 표·타일이 흔들리지 않는다 */
+body {
+  font-variant-numeric: tabular-nums;
+}
+
 input,
 textarea,
 select,
 button {
   font: inherit;
+  letter-spacing: inherit;
   color: inherit;
 }
 
-/* 포커스 링 — 키보드 운영자를 위해 지우지 않고 통일한다 */
+/* 입력 요소 포커스 — 키보드 운영자를 위해 지우지 않고 통일한다 */
 :where(button, input, textarea, select, a):focus-visible {
   outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+
+/* 브라우저 기본 날짜 피커 아이콘이 다크에서 안 보이는 문제 */
+:root[data-theme='dark'] input[type='datetime-local']::-webkit-calendar-picker-indicator {
+  filter: invert(1);
 }

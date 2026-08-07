@@ -25,12 +25,14 @@ import {
   Megaphone,
   Menu,
   MessageSquare,
+  Moon,
   Pencil,
   Pin,
   Plus,
   RefreshCw,
   Server,
   Settings2,
+  Sun,
   Trash2,
   Wrench,
   X,
@@ -115,22 +117,26 @@ function urlState(): { tab: Tab; app: string } {
 
 // ───────────────────────── 프리미티브 ─────────────────────────
 
-const card = 'rounded-card border border-border bg-surface';
+// 회색 배경 위에 흰 카드가 얕게 떠 보이도록 — 테두리 하나로만 구분하면 밀도가 높을 때 답답해진다
+const card = 'rounded-card border border-border bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
 const input =
-  'w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm placeholder:text-fg-muted/60';
+  'w-full rounded-lg border border-border bg-surface px-3 py-2 text-[13.5px] placeholder:text-fg-muted/55 transition-colors focus:border-accent';
+/** 섹션 제목 — 카드 안 소제목의 위계를 한 곳에서 통일한다 */
+const sectionTitle = 'text-[13px] font-semibold tracking-tight';
 
 function Button({
   variant = 'default',
   className = '',
   ...props
 }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'default' | 'primary' | 'ghost' | 'danger' }) {
+  // h-9 고정 — 입력·버튼 높이가 어긋나면 한 줄에 나열했을 때 지저분해진다
   const base =
-    'inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none whitespace-nowrap';
+    'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-[13px] font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none whitespace-nowrap';
   const variants = {
     default: 'border border-border bg-surface hover:bg-muted',
-    primary: 'bg-accent text-accent-fg hover:opacity-90',
+    primary: 'bg-accent text-accent-fg hover:brightness-110',
     ghost: 'text-fg-muted hover:bg-muted hover:text-fg',
-    danger: 'border border-danger/30 text-danger hover:bg-danger-soft',
+    danger: 'border border-danger/25 text-danger hover:bg-danger-soft',
   };
   return <button className={`${base} ${variants[variant]} ${className}`} {...props} />;
 }
@@ -145,18 +151,22 @@ function Badge({
   const tones = {
     muted: 'bg-muted text-fg-muted',
     accent: 'bg-accent-soft text-accent',
-    ok: 'bg-ok/10 text-ok',
-    warn: 'bg-warn/10 text-warn',
+    ok: 'bg-ok-soft text-ok',
+    warn: 'bg-warn-soft text-warn',
     danger: 'bg-danger-soft text-danger',
   };
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${tones[tone]}`}>{children}</span>;
+  return (
+    <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold ${tones[tone]}`}>
+      {children}
+    </span>
+  );
 }
 
 function EmptyState({ icon: Icon, children }: { icon: React.ElementType; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col items-center gap-3 py-16 text-center">
-      <Icon className="size-8 text-fg-muted/40" strokeWidth={1.5} />
-      <p className="text-sm text-fg-muted">{children}</p>
+    <div className="flex flex-col items-center gap-3 py-20 text-center">
+      <Icon className="size-7 text-fg-muted/35" strokeWidth={1.5} />
+      <p className="text-[13px] text-fg-muted">{children}</p>
     </div>
   );
 }
@@ -164,9 +174,9 @@ function EmptyState({ icon: Icon, children }: { icon: React.ElementType; childre
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-medium">{label}</span>
-      {hint && <span className="mb-1.5 block text-xs text-fg-muted">{hint}</span>}
-      {children}
+      <span className="block text-[13px] font-medium">{label}</span>
+      {hint && <span className="mt-0.5 block text-[12px] text-fg-muted">{hint}</span>}
+      <div className="mt-1.5">{children}</div>
     </label>
   );
 }
@@ -187,13 +197,14 @@ function Stat({
 }) {
   const tones = { muted: 'text-fg', ok: 'text-ok', warn: 'text-warn', danger: 'text-danger' };
   return (
-    <div className={`${card} p-4`}>
-      <div className="flex items-center gap-2 text-fg-muted">
-        <Icon className="size-4" />
-        <span className="text-xs font-medium">{label}</span>
+    <div className={`${card} p-6`}>
+      <div className="flex items-center gap-1.5 text-fg-muted">
+        <Icon className="size-3.5" />
+        <span className="text-[12px] font-medium">{label}</span>
       </div>
-      <p className={`mt-2 text-2xl font-semibold tabular-nums tracking-tight ${tones[tone]}`}>{value}</p>
-      {sub && <p className="mt-1 text-xs text-fg-muted">{sub}</p>}
+      {/* 지표는 크게 — 대시보드에서 가장 먼저 읽혀야 하는 것이 숫자다 */}
+      <p className={`mt-2.5 text-[26px] font-bold leading-none tracking-tight ${tones[tone]}`}>{value}</p>
+      {sub && <p className="mt-2 text-[12px] leading-snug text-fg-muted">{sub}</p>}
     </div>
   );
 }
@@ -226,8 +237,25 @@ export default function Ops() {
     setTimeout(() => setToast(''), 2400);
   }, []);
 
+  // 테마는 밝은 쪽이 기본. OS 다크를 따라가지 않는다(콘솔이 통째로 어두워져 읽기 힘들다는 피드백).
+  // 실제 적용은 layout.tsx의 인라인 스크립트가 하이드레이션 전에 끝낸다 — 여기선 현재 상태만 읽는다.
+  const [dark, setDark] = useState(false);
+  const toggleTheme = useCallback(() => {
+    setDark((d) => {
+      const next = !d;
+      document.documentElement.dataset.theme = next ? 'dark' : 'light';
+      try {
+        localStorage.setItem('cs_theme', next ? 'dark' : 'light');
+      } catch {
+        /* 사생활 보호 모드 등 — 테마는 이번 세션에만 적용되고 만다 */
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     setToken(sessionStorage.getItem(TOKEN_KEY) ?? '');
+    setDark(document.documentElement.dataset.theme === 'dark');
     const s = urlState();
     setTab(s.tab);
     if (s.app) setAppCode(s.app);
@@ -373,31 +401,33 @@ export default function Ops() {
   const currentApp = apps.find((a) => a.appCode === appCode);
 
   return (
-    <div className="min-h-dvh md:grid md:grid-cols-[15rem_1fr]">
+    <div className="min-h-dvh md:grid md:grid-cols-[16rem_1fr]">
       {/* 모바일 드로어 배경 */}
       {navOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setNavOpen(false)} />}
 
       {/* ── 사이드바 ── */}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-border bg-surface p-3.5 transition-transform md:sticky md:top-0 md:h-dvh md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-border bg-surface p-4 transition-transform md:sticky md:top-0 md:h-dvh md:translate-x-0 ${
           navOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center gap-2 px-2 py-1">
-          <Server className="size-4 text-accent" />
-          <span className="text-sm font-semibold tracking-tight">공통 서버</span>
+        <div className="flex items-center gap-2 px-1">
+          <div className="grid size-7 place-items-center rounded-lg bg-accent-soft">
+            <Server className="size-3.5 text-accent" />
+          </div>
+          <span className="text-[14px] font-bold tracking-tight">공통 서버</span>
           <button className="ml-auto md:hidden" onClick={() => setNavOpen(false)} aria-label="메뉴 닫기">
             <X className="size-4 text-fg-muted" />
           </button>
         </div>
 
         {/* 앱 선택 — 배구 콘솔엔 없는 요소(저쪽은 PROJ_CODE 고정). 모든 화면이 이 선택에 종속된다 */}
-        <label className="mt-4 block px-2">
-          <span className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted/70">앱</span>
+        <label className="mt-5 block">
+          <span className="mb-1.5 block px-1 text-[10.5px] font-bold uppercase tracking-[0.08em] text-fg-muted/65">앱</span>
           <select
             value={appCode}
             onChange={(e) => navigate({ app: e.target.value })}
-            className="w-full rounded-lg border border-border bg-bg px-2.5 py-1.5 text-sm"
+            className="h-9 w-full rounded-lg border border-border bg-bg px-2.5 text-[13.5px] font-medium"
           >
             {apps.length === 0 && <option value="">— 없음 —</option>}
             {apps.map((a) => (
@@ -408,24 +438,26 @@ export default function Ops() {
           </select>
         </label>
 
-        <nav className="mt-5 flex flex-1 flex-col gap-0.5">
+        <nav className="mt-6 flex flex-1 flex-col gap-0.5">
           {NAV.map((n, i) => (
             <div key={n.id}>
               {n.grp && n.grp !== NAV[i - 1]?.grp && (
-                <div className="px-2 pb-1.5 pt-4 text-[10.5px] font-semibold uppercase tracking-wider text-fg-muted/70">
+                <div className="px-1 pb-1.5 pt-5 text-[10.5px] font-bold uppercase tracking-[0.08em] text-fg-muted/65">
                   {n.grp}
                 </div>
               )}
               <button
                 onClick={() => navigate({ tab: n.id })}
-                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors ${
-                  tab === n.id ? 'bg-accent-soft font-semibold text-accent' : 'text-fg-muted hover:bg-muted hover:text-fg'
+                className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2.5 text-[13.5px] transition-colors ${
+                  tab === n.id
+                    ? 'bg-accent-soft font-semibold text-accent'
+                    : 'font-medium text-fg-muted hover:bg-muted hover:text-fg'
                 }`}
               >
                 <n.icon className="size-4 shrink-0" />
                 {n.label}
                 {n.id === 'tickets' && openTickets > 0 && (
-                  <span className="ml-auto rounded-full bg-danger px-1.5 py-px text-[11px] font-bold text-white tabular-nums">
+                  <span className="ml-auto rounded-full bg-danger px-1.5 py-px text-[11px] font-bold text-white">
                     {openTickets}
                   </span>
                 )}
@@ -445,27 +477,35 @@ export default function Ops() {
           </button>
         )}
 
-        <Button
-          variant="ghost"
-          onClick={() => {
-            sessionStorage.removeItem(TOKEN_KEY);
-            setToken('');
-            setVerified(false);
-          }}
-        >
-          <LogOut className="size-4" /> 로그아웃
-        </Button>
+        <div className="flex gap-1">
+          <Button
+            variant="ghost"
+            className="flex-1 justify-start"
+            onClick={() => {
+              sessionStorage.removeItem(TOKEN_KEY);
+              setToken('');
+              setVerified(false);
+            }}
+          >
+            <LogOut className="size-4" /> 로그아웃
+          </Button>
+          <Button variant="ghost" onClick={toggleTheme} aria-label={dark ? '밝은 테마로' : '어두운 테마로'} title={dark ? '밝은 테마로' : '어두운 테마로'}>
+            {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </Button>
+        </div>
       </aside>
 
       {/* ── 본문 ── */}
       <div className="min-w-0">
-        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-bg/85 px-5 backdrop-blur">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-bg/85 px-6 backdrop-blur">
           <button className="md:hidden" onClick={() => setNavOpen(true)} aria-label="메뉴 열기">
             <Menu className="size-5" />
           </button>
           <div className="min-w-0">
-            <h1 className="truncate text-sm font-semibold tracking-tight">{TITLES[tab]}</h1>
-            <p className="truncate text-xs text-fg-muted">{currentApp ? `${currentApp.name} · ${currentApp.appCode}` : '앱 없음'}</p>
+            <h1 className="truncate text-[15px] font-bold tracking-tight">{TITLES[tab]}</h1>
+            <p className="mt-0.5 truncate text-[12px] text-fg-muted">
+              {currentApp ? `${currentApp.name} · ${currentApp.appCode}` : '앱 없음'}
+            </p>
           </div>
           <Button
             variant="ghost"
@@ -480,9 +520,9 @@ export default function Ops() {
           </Button>
         </header>
 
-        <main className="mx-auto max-w-5xl px-5 py-6">
+        <main className="mx-auto max-w-5xl px-6 py-7">
           {err && (
-            <div className="mb-4 flex items-center gap-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+            <div className="mb-5 flex items-center gap-2 rounded-lg bg-danger-soft px-3 py-2.5 text-[13px] font-medium text-danger">
               <AlertTriangle className="size-4 shrink-0" /> {err}
             </div>
           )}
@@ -579,9 +619,9 @@ function Overview({
       </div>
 
       {/* 진입 게이트 요약 — 값이 비어 있으면 게이트가 없는 것이라 명시한다(무설정과 무효를 헷갈리지 않게) */}
-      <section className={`${card} p-5`}>
+      <section className={`${card} p-6`}>
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">진입 게이트</h2>
+          <h2 className={sectionTitle}>진입 게이트</h2>
           <Button variant="ghost" onClick={() => go('settings')}>
             설정으로
           </Button>
@@ -605,7 +645,7 @@ function Overview({
 
       <section>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold">최근 문의</h2>
+          <h2 className={sectionTitle}>최근 문의</h2>
           <Button variant="ghost" onClick={() => go('tickets')}>
             전체 보기
           </Button>
@@ -710,8 +750,8 @@ function Announcements({
 
   return (
     <div className="space-y-4">
-      <section className={`${card} p-5`}>
-        <h2 className="mb-4 text-sm font-semibold">새 공지</h2>
+      <section className={`${card} p-6`}>
+        <h2 className={`mb-4 ${sectionTitle}`}>새 공지</h2>
         <div className="space-y-3">
           <div className="flex flex-wrap gap-2">
             <select
@@ -846,7 +886,7 @@ function Announcements({
         }
 
         return (
-          <article key={a.id} className={`${card} p-5 ${ended ? 'opacity-60' : ''}`}>
+          <article key={a.id} className={`${card} p-6 ${ended ? 'opacity-60' : ''}`}>
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
@@ -858,9 +898,9 @@ function Announcements({
                   )}
                   <Badge>{KIND_KO[a.kind] ?? a.kind}</Badge>
                 </div>
-                <h3 className="font-medium">{a.title}</h3>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-fg-muted">{a.body}</p>
-                <p className="mt-3 text-xs text-fg-muted">
+                <h3 className="text-[14.5px] font-semibold tracking-tight">{a.title}</h3>
+                <p className="mt-2 whitespace-pre-wrap text-[13.5px] leading-relaxed text-fg-muted">{a.body}</p>
+                <p className="mt-3 text-[12px] text-fg-muted">
                   {fmt(a.startsAt)} ~ {a.endsAt ? fmt(a.endsAt) : '무기한'}
                 </p>
               </div>
@@ -937,7 +977,7 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
       </div>
 
       {filtered.map((t) => (
-        <article key={t.id} className={`${card} p-5`}>
+        <article key={t.id} className={`${card} p-6`}>
           <div className="mb-3 flex flex-wrap items-center gap-2">
             {t.status === 'open' ? (
               <Badge tone="warn">{STATUS_KO[t.status]}</Badge>
@@ -954,7 +994,7 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
             <span className="ml-auto text-xs text-fg-muted">{fmt(t.createdAt)}</span>
           </div>
 
-          <p className="whitespace-pre-wrap text-sm">{t.content}</p>
+          <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed">{t.content}</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
             <input
@@ -1021,7 +1061,7 @@ function SettingsTab({ api, appCode, s, reload, onError, flash }: Common & { app
   return (
     <div className="max-w-2xl space-y-4">
       <section className={`${card} space-y-4 p-5`}>
-        <h2 className="text-sm font-semibold">버전 게이트</h2>
+        <h2 className={sectionTitle}>버전 게이트</h2>
         {textField('minVersion', '최소 버전', '이 미만은 진입 차단 (강제 업데이트)')}
         {textField('latestVersion', '최신 버전', '이 미만은 건너뛸 수 있는 안내')}
         {textField('androidStoreUrl', 'Android 스토어 URL')}
@@ -1034,7 +1074,7 @@ function SettingsTab({ api, appCode, s, reload, onError, flash }: Common & { app
         <div className="mb-4 flex items-start gap-3">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger" />
           <div className="flex-1">
-            <h2 className="text-sm font-semibold text-danger">점검 모드</h2>
+            <h2 className={`${sectionTitle} text-danger`}>점검 모드</h2>
             <p className="mt-0.5 text-xs text-fg-muted">
               켜는 즉시 이 앱의 <strong>모든 사용자</strong>가 진입할 수 없습니다.
             </p>
@@ -1113,8 +1153,8 @@ function AppsTab({ api, apps, reload, onError, flash }: Common & { apps: App[] }
 
   return (
     <div className="space-y-4">
-      <section className={`${card} p-5`}>
-        <h2 className="mb-4 text-sm font-semibold">앱 등록</h2>
+      <section className={`${card} p-6`}>
+        <h2 className={`mb-4 ${sectionTitle}`}>앱 등록</h2>
         <div className="flex flex-wrap gap-2">
           <input
             placeholder="app_code (예: myword)"
