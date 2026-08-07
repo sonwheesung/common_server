@@ -25,6 +25,7 @@ import {
   Megaphone,
   Menu,
   MessageSquare,
+  Pencil,
   Pin,
   Plus,
   RefreshCw,
@@ -90,6 +91,16 @@ const TITLES: Record<Tab, string> = {
 
 const fmt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+
+/** ISO → `<input type="datetime-local">` 값(로컬 시각). 수정 화면에 기존 기간을 되채우려면 필요하다.
+ *  toISOString()을 쓰면 UTC로 밀려 "9시간 당겨진 시각"이 폼에 뜬다. */
+function toLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 // ── 메뉴·앱 ↔ URL 동기화(?tab=&app=) — 새로고침·북마크·뒤로가기로 특정 화면 진입.
 //    SSR 안전(window 가드 — 클라 컴포넌트지만 초기 렌더는 서버에서 돈다).
@@ -659,6 +670,42 @@ function Announcements({
     }
   };
 
+  // ── 수정 ──
+  // 서버는 처음부터 PATCH를 지원했는데 화면에 노출하지 않아 "고칠 수 없는 공지"가 됐다.
+  // 오타 하나 때문에 지우고 다시 쓰면 id가 바뀌고, id는 앱의 읽음 처리 키라 **이미 읽은 사람에게도 다시 안읽음으로 뜬다.**
+  // 그래서 수정은 삭제-재작성으로 대체할 수 없다.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [edit, setEdit] = useState({ kind: 'notice', title: '', body: '', pinned: false, startsAt: '', endsAt: '' });
+
+  const beginEdit = (a: Announcement) => {
+    setEditing(a.id);
+    setEdit({
+      kind: a.kind,
+      title: a.title,
+      body: a.body,
+      pinned: a.pinned,
+      startsAt: toLocalInput(a.startsAt),
+      endsAt: toLocalInput(a.endsAt),
+    });
+  };
+
+  const saveEdit = async (id: string) => {
+    if (!edit.title.trim() || !edit.body.trim()) return onError('제목과 내용을 채우세요');
+    setBusy(true);
+    try {
+      // 폼 전체를 보낸다 — endsAt을 비우면 서버가 null(무기한)로 되돌린다.
+      await api('announcements', { method: 'PATCH', body: JSON.stringify({ id, ...edit }) });
+      setEditing(null);
+      onError('');
+      await reload();
+      flash('수정했습니다');
+    } catch (e) {
+      onError(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const now = Date.now();
 
   return (
@@ -728,9 +775,79 @@ function Announcements({
       {rows.map((a) => {
         const started = new Date(a.startsAt).getTime() <= now;
         const ended = a.endsAt ? new Date(a.endsAt).getTime() < now : false;
+
+        if (editing === a.id) {
+          return (
+            <article key={a.id} className="rounded-card border-2 border-accent bg-surface p-5">
+              <h2 className="mb-4 text-sm font-semibold text-accent">공지 수정</h2>
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={edit.kind}
+                    onChange={(e) => setEdit({ ...edit, kind: e.target.value })}
+                    className="rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+                  >
+                    <option value="notice">공지</option>
+                    <option value="event">이벤트</option>
+                    <option value="update">업데이트</option>
+                  </select>
+                  <input
+                    value={edit.title}
+                    onChange={(e) => setEdit({ ...edit, title: e.target.value })}
+                    className={`${input} min-w-60 flex-1`}
+                    maxLength={200}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEdit({ ...edit, pinned: !edit.pinned })}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                      edit.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
+                    }`}
+                  >
+                    <Pin className="size-4" /> 상단 고정
+                  </button>
+                </div>
+
+                <textarea
+                  value={edit.body}
+                  onChange={(e) => setEdit({ ...edit, body: e.target.value })}
+                  className={`${input} min-h-32 resize-y`}
+                  maxLength={10000}
+                />
+
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="text-fg-muted">노출 기간</span>
+                  <input
+                    type="datetime-local"
+                    value={edit.startsAt}
+                    onChange={(e) => setEdit({ ...edit, startsAt: e.target.value })}
+                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
+                  />
+                  <span className="text-fg-muted">~</span>
+                  <input
+                    type="datetime-local"
+                    value={edit.endsAt}
+                    onChange={(e) => setEdit({ ...edit, endsAt: e.target.value })}
+                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
+                  />
+                  <span className="text-xs text-fg-muted">종료를 비우면 무기한</span>
+                  <div className="ml-auto flex gap-2">
+                    <Button onClick={() => setEditing(null)} disabled={busy}>
+                      취소
+                    </Button>
+                    <Button variant="primary" onClick={() => saveEdit(a.id)} disabled={busy}>
+                      <Check className="size-4" /> 저장
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          );
+        }
+
         return (
           <article key={a.id} className={`${card} p-5 ${ended ? 'opacity-60' : ''}`}>
-            <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   {ended ? <Badge>종료</Badge> : started ? <Badge tone="ok">노출 중</Badge> : <Badge tone="warn">예정</Badge>}
@@ -747,9 +864,14 @@ function Announcements({
                   {fmt(a.startsAt)} ~ {a.endsAt ? fmt(a.endsAt) : '무기한'}
                 </p>
               </div>
-              <Button variant="danger" onClick={() => remove(a)} aria-label="삭제">
-                <Trash2 className="size-4" />
-              </Button>
+              <div className="flex shrink-0 gap-2">
+                <Button onClick={() => beginEdit(a)}>
+                  <Pencil className="size-4" /> 수정
+                </Button>
+                <Button variant="danger" onClick={() => remove(a)}>
+                  <Trash2 className="size-4" /> 삭제
+                </Button>
+              </div>
             </div>
           </article>
         );
