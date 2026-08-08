@@ -12,6 +12,7 @@ import { and, eq, gte, sql } from 'drizzle-orm';
 import { db } from '../../../../db';
 import { tickets } from '../../../../db/schema';
 import { getActiveApp } from '../../../../lib/apps';
+import { requireSubject } from '../../../../lib/auth/subject';
 import { checkLimit, clientIp } from '../../../../lib/ratelimit';
 import { afterSafe } from '../../../../lib/afterSafe';
 import { notifyTicket } from '../../../../lib/notify';
@@ -42,6 +43,21 @@ export async function POST(req: Request) {
     const app = await getActiveApp(b.app);
     if (!app) return NextResponse.json({ ok: false, reason: 'not-found' }, { status: 404 });
 
+    // 로그인은 **선택**이다. 세션이 있으면 문의를 그 주체에 귀속시켜 답변을 돌려줄 수 있게 하고,
+    // 없으면 기존처럼 익명으로 받는다(비회원 앱은 계속 이 경로로 온다).
+    //
+    // 단, Authorization 헤더가 **있는데 무효**면 익명으로 조용히 강등시키지 않고 401을 준다.
+    // 강등시키면 로그인한 사용자의 문의가 귀속 없이 저장돼 답변을 영영 못 받는데,
+    // 앱도 사용자도 그 사실을 알 방법이 없다 — 조용히 실패하는 쪽이 훨씬 나쁘다.
+    let subjectId: string | null = null;
+    if (req.headers.get('authorization')) {
+      const authed = await requireSubject(req);
+      if (!authed || authed.subject.appCode !== app.appCode) {
+        return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
+      }
+      subjectId = authed.subject.id;
+    }
+
     const category = CATEGORIES.has(b.category ?? '') ? (b.category as string) : 'etc';
     const content = (b.content ?? '').trim();
     if (content.length < CONTENT_MIN) {
@@ -65,6 +81,7 @@ export async function POST(req: Request) {
       .insert(tickets)
       .values({
         appCode: app.appCode,
+        subjectId, // 익명이면 null — 기존 문의와 같은 모양으로 저장된다
         category,
         content: content.slice(0, CONTENT_MAX),
         platform,

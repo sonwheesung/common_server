@@ -5,7 +5,7 @@
 //
 // v1은 신원(subject)을 두지 않는다 — 공지는 읽기 전용 브로드캐스트, 문의는 단방향 익명이라 필요가 없다.
 // 쿠폰·광고제거를 붙일 때 `subjects` 테이블을 추가하고 tickets에 `subject_id`(nullable)를 **덧붙인다**(Expand-only, PLAN §8).
-import { pgTable, uuid, text, integer, boolean, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 
 // ── 앱 레지스트리 ── 공개 라우트 allowlist의 근거. 배구는 env(ANON_TICKET_PROJECTS)였으나 여기선 DB로 둔다
 //    — 앱을 하나 늘릴 때마다 재배포하지 않기 위해서.
@@ -66,6 +66,10 @@ export const tickets = pgTable(
     appCode: text('app_code')
       .notNull()
       .references(() => apps.appCode),
+    // 작성자 — **nullable**이 핵심이다(Expand-only). 익명 접수는 계속 null로 들어오고,
+    // 로그인 앱에서만 채워진다. 기존 익명 문의를 건드리지 않고 회원 문의를 얹기 위한 설계.
+    // 이 값이 있어야 "내 문의 내역"과 답변 회신이 가능하다.
+    subjectId: uuid('subject_id').references(() => subjects.id),
     category: text('category').notNull(), // bug | suggestion | question | etc
     content: text('content').notNull(), // ≤2000자(라우트에서 컷)
     status: text('status').notNull().default('open'), // open | replied | resolved
@@ -78,10 +82,63 @@ export const tickets = pgTable(
   (t) => [
     index('tickets_app_created_idx').on(t.appCode, t.createdAt), // 목록 조회 + 24h 캡 카운트
     index('tickets_app_status_idx').on(t.appCode, t.status),
+    index('tickets_subject_idx').on(t.subjectId, t.createdAt), // "내 문의 내역" 조회
   ],
+);
+
+// ── 주체(subject) ── 로그인 사용자·익명 기기를 한 테이블로 다룬다.
+// 문의·(향후)쿠폰·엔타이틀먼트가 전부 subject_id 하나에만 매달리게 해서 회원/비회원 코드 경로가 갈라지지 않게 한다.
+//
+// provider가 **enum이 아니라 text인 이유**: 카카오·애플이 뒤에 온다. text면 공급자 추가가 마이그레이션이 아니라
+// 데이터가 된다(검증기만 붙이면 됨). 실제 허용 여부는 검증기가 구현된 공급자인지로 결정한다(fail-closed).
+//
+// UNIQUE(app_code, provider, provider_id) — **앱별 계정 격리**. 같은 구글 계정이라도 앱이 다르면 별개 사용자다
+// (앱마다 별개 서비스이므로 A앱 문의가 B앱에서 보이면 안 된다).
+export const subjects = pgTable(
+  'subjects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    appCode: text('app_code')
+      .notNull()
+      .references(() => apps.appCode),
+    kind: text('kind').notNull().default('user'), // user | device(향후 비회원 앱)
+    provider: text('provider').notNull(), // google | kakao | apple | device
+    providerId: text('provider_id').notNull(), // 구글 sub 등 공급자 고유 식별자
+    // 구글 ID토큰에서 검증된 이메일(운영 식별용). 공급자가 안 줄 수도 있어 nullable.
+    // 개인정보이므로 탈퇴 시 지운다(파기).
+    email: text('email'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    // 탈퇴 소프트삭제. 지울 때 provider_id를 가명화(tombstone)해 **재로그인으로 부활하지 않게** 한다.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('subjects_app_provider_uniq').on(t.appCode, t.provider, t.providerId),
+    index('subjects_app_idx').on(t.appCode),
+  ],
+);
+
+// ── 앱별 소셜 로그인 설정 ── 공급자별 audience(클라이언트 ID) 목록.
+// env가 아니라 DB에 두는 이유는 `apps`와 같다 — 앱을 늘릴 때마다 재배포하지 않기 위해서다.
+// 클라이언트 ID는 앱 번들에 박히는 **공개값**이라 DB 보관이 안전하다(시크릿이 아니다).
+// 구글은 android/ios/web 3개를 쓰므로 콤마 구분 목록으로 둔다. 카카오(REST 키)·애플(bundle id)도 같은 모양.
+export const appAuthProviders = pgTable(
+  'app_auth_providers',
+  {
+    appCode: text('app_code')
+      .notNull()
+      .references(() => apps.appCode),
+    provider: text('provider').notNull(),
+    audiences: text('audiences').notNull(), // 콤마 구분. 비어 있으면 검증 불가 → 로그인 거부(fail-closed)
+    enabled: boolean('enabled').notNull().default(true),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.appCode, t.provider] })],
 );
 
 export type App = typeof apps.$inferSelect;
 export type AppSettings = typeof appSettings.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
+export type Subject = typeof subjects.$inferSelect;
+export type AppAuthProvider = typeof appAuthProviders.$inferSelect;

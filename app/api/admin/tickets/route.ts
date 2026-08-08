@@ -5,7 +5,7 @@
 import { NextResponse } from 'next/server';
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../../../../db';
-import { tickets } from '../../../../db/schema';
+import { subjects, tickets } from '../../../../db/schema';
 import { isAdmin } from '../../../../lib/admin';
 import { normalizeAppCode } from '../../../../lib/apps';
 import { reportError } from '../../../../lib/observability';
@@ -31,7 +31,28 @@ export async function GET(req: Request) {
         ? and(eq(tickets.appCode, appCode), eq(tickets.status, status))
         : eq(tickets.appCode, appCode);
 
-    const rows = await db.select().from(tickets).where(where).orderBy(desc(tickets.createdAt)).limit(LIST_LIMIT);
+    // 작성자 이메일을 함께 준다 — 로그인 문의는 "누구의 문의인지" 알아야 답변을 쓸 수 있다.
+    // LEFT JOIN이라 익명 문의(subject_id null)는 그대로 나오고 이메일만 null이다.
+    const rows = await db
+      .select({
+        id: tickets.id,
+        subjectId: tickets.subjectId,
+        subjectEmail: subjects.email,
+        subjectDeleted: subjects.deletedAt,
+        category: tickets.category,
+        content: tickets.content,
+        status: tickets.status,
+        reply: tickets.reply,
+        repliedAt: tickets.repliedAt,
+        platform: tickets.platform,
+        appVersion: tickets.appVersion,
+        createdAt: tickets.createdAt,
+      })
+      .from(tickets)
+      .leftJoin(subjects, eq(tickets.subjectId, subjects.id))
+      .where(where)
+      .orderBy(desc(tickets.createdAt))
+      .limit(LIST_LIMIT);
     return NextResponse.json({ ok: true, tickets: rows });
   } catch (e) {
     reportError(e, 'admin/tickets:GET');

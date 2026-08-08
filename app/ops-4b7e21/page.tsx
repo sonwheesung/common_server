@@ -60,6 +60,10 @@ type Announcement = {
 };
 type Ticket = {
   id: string;
+  /** 로그인 사용자의 문의면 채워진다. null = 익명 접수(답변을 돌려줄 경로가 없다) */
+  subjectId: string | null;
+  subjectEmail: string | null;
+  subjectDeleted: string | null;
   category: string;
   content: string;
   status: string;
@@ -68,6 +72,8 @@ type Ticket = {
   appVersion: string | null;
   createdAt: string;
 };
+
+type AuthProvider = { appCode: string; provider: string; audiences: string; enabled: boolean };
 
 type Tab = 'overview' | 'anns' | 'tickets' | 'settings' | 'apps';
 
@@ -973,7 +979,10 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
             </button>
           ))}
         </div>
-        <p className="text-xs text-fg-muted">익명 단방향 접수입니다 — 메모는 내부용이고 사용자에게 전달되지 않습니다.</p>
+        <p className="text-[12px] text-fg-muted">
+          <strong className="text-accent">회원</strong> 문의는 답변이 앱에 노출되고,{' '}
+          <strong>익명</strong> 문의는 전달 경로가 없어 메모만 남습니다.
+        </p>
       </div>
 
       {filtered.map((t) => (
@@ -987,38 +996,54 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
               <Badge tone="accent">{STATUS_KO[t.status] ?? t.status}</Badge>
             )}
             <Badge>{CATEGORY_KO[t.category] ?? t.category}</Badge>
-            <span className="text-xs text-fg-muted">
+            {/* 작성자 — 답변이 사용자에게 보이는지 아닌지가 여기서 갈린다 */}
+            {t.subjectId ? (
+              <Badge tone="accent">{t.subjectDeleted ? '탈퇴한 회원' : (t.subjectEmail ?? '회원')}</Badge>
+            ) : (
+              <Badge>익명</Badge>
+            )}
+            <span className="text-[12px] text-fg-muted">
               {t.platform ?? '—'}
               {t.appVersion ? ` · v${t.appVersion}` : ''}
             </span>
-            <span className="ml-auto text-xs text-fg-muted">{fmt(t.createdAt)}</span>
+            <span className="ml-auto text-[12px] text-fg-muted">{fmt(t.createdAt)}</span>
           </div>
 
           <p className="whitespace-pre-wrap text-[13.5px] leading-relaxed">{t.content}</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
             <input
-              placeholder="내부 메모"
+              placeholder={t.subjectId ? '답변 — 사용자에게 그대로 보입니다' : '내부 메모 — 사용자에게 보이지 않습니다'}
               value={memoOf(t)}
               onChange={(e) => setMemo((m) => ({ ...m, [t.id]: e.target.value }))}
-              className={`${input} min-w-60 flex-1`}
+              className={`${input} min-w-60 flex-1 ${t.subjectId ? 'border-accent/50' : ''}`}
               maxLength={4000}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && dirty(t)) void patch(t.id, { reply: memoOf(t) }, '메모를 저장했습니다');
+                if (e.key === 'Enter' && dirty(t)) void patch(t.id, { reply: memoOf(t) }, '저장했습니다');
               }}
             />
             <Button
               variant={dirty(t) ? 'primary' : 'default'}
-              onClick={() => patch(t.id, { reply: memoOf(t) }, '메모를 저장했습니다')}
+              onClick={() => patch(t.id, { reply: memoOf(t) }, '저장했습니다')}
               disabled={!dirty(t)}
             >
-              <Check className="size-4" /> 메모 저장
+              <Check className="size-4" /> {t.subjectId ? '답변 저장' : '메모 저장'}
             </Button>
             {t.status !== 'resolved' && (
               <Button onClick={() => patch(t.id, { status: 'resolved' }, '완료 처리했습니다')}>완료 처리</Button>
             )}
           </div>
-          {dirty(t) && <p className="mt-2 text-xs text-warn">저장하지 않은 메모가 있습니다</p>}
+          {/* 같은 컬럼(reply)이지만 회원 문의에서는 사용자에게 노출된다 —
+              운영자가 메모 쓰듯 답변을 쓰는 사고를 막으려면 입력 시점에 알려야 한다 */}
+          {t.subjectId && !t.subjectDeleted && (
+            <p className="mt-2 text-[12px] text-accent">
+              회원 문의입니다. 여기 쓴 내용은 앱의 “내 문의 내역”에 그대로 노출됩니다.
+            </p>
+          )}
+          {t.subjectDeleted && (
+            <p className="mt-2 text-[12px] text-fg-muted">탈퇴한 회원입니다 — 답변을 써도 전달되지 않습니다.</p>
+          )}
+          {dirty(t) && <p className="mt-2 text-[12px] text-warn">저장하지 않은 내용이 있습니다</p>}
         </article>
       ))}
 
@@ -1066,8 +1091,10 @@ function SettingsTab({ api, appCode, s, reload, onError, flash }: Common & { app
         {textField('latestVersion', '최신 버전', '이 미만은 건너뛸 수 있는 안내')}
         {textField('androidStoreUrl', 'Android 스토어 URL')}
         {textField('iosStoreUrl', 'iOS 스토어 URL')}
-        <p className="text-xs text-fg-muted">비우면 해당 게이트가 없는 것으로 처리됩니다. 저장 즉시 앱에 반영됩니다.</p>
+        <p className="text-[12px] text-fg-muted">비우면 해당 게이트가 없는 것으로 처리됩니다. 저장 즉시 앱에 반영됩니다.</p>
       </section>
+
+      <AuthProviders api={api} appCode={appCode} onError={onError} flash={flash} />
 
       {/* 위험 구역 — 진입 차단 스위치라 시각적으로 분리한다 */}
       <section className={`rounded-card border p-5 ${s.maintenance ? 'border-danger/40 bg-danger-soft' : 'border-danger/25 bg-surface'}`}>
@@ -1119,6 +1146,113 @@ function SettingsTab({ api, appCode, s, reload, onError, flash }: Common & { app
         </div>
       </section>
     </div>
+  );
+}
+
+// ───────────────────────── 소셜 로그인 설정 ─────────────────────────
+
+/**
+ * 앱별 공급자 audience(클라이언트 ID) 등록.
+ *
+ * 서버가 **구현된 검증기가 있는 공급자만** 목록으로 내려준다(supported). 카카오·애플은 검증기를 붙이기
+ * 전까지 여기 나타나지 않는다 — 미리 설정해두면 "켰는데 왜 로그인이 안 되지"로 시간을 버린다.
+ */
+function AuthProviders({ api, appCode, onError, flash }: Omit<Common, 'reload'> & { appCode: string }) {
+  const [rows, setRows] = useState<AuthProvider[]>([]);
+  const [supported, setSupported] = useState<string[]>([]);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    try {
+      const j = await api(`auth-providers?app=${appCode}`);
+      setRows(j.providers);
+      setSupported(j.supported);
+      setDraft({});
+    } catch (e) {
+      onError(String((e as Error).message));
+    }
+  }, [api, appCode, onError]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const valueOf = (p: string) => draft[p] ?? rows.find((r) => r.provider === p)?.audiences ?? '';
+  const savedOf = (p: string) => rows.find((r) => r.provider === p)?.audiences ?? '';
+
+  const save = async (provider: string) => {
+    try {
+      await api('auth-providers', { method: 'PUT', body: JSON.stringify({ appCode, provider, audiences: valueOf(provider) }) });
+      await load();
+      flash('로그인 설정을 저장했습니다');
+    } catch (e) {
+      onError(String((e as Error).message));
+    }
+  };
+
+  const toggle = async (provider: string, enabled: boolean) => {
+    try {
+      await api('auth-providers', { method: 'PUT', body: JSON.stringify({ appCode, provider, audiences: savedOf(provider), enabled }) });
+      await load();
+      flash(enabled ? '로그인을 켰습니다' : '로그인을 껐습니다');
+    } catch (e) {
+      onError(String((e as Error).message));
+    }
+  };
+
+  return (
+    <section className={`${card} space-y-4 p-6`}>
+      <div className="flex items-center gap-2">
+        <Lock className="size-3.5 text-fg-muted" />
+        <h2 className={sectionTitle}>소셜 로그인</h2>
+      </div>
+
+      {supported.map((p) => {
+        const row = rows.find((r) => r.provider === p);
+        const changed = valueOf(p) !== savedOf(p);
+        return (
+          <div key={p} className="space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-medium capitalize">{p}</span>
+              {row ? (
+                row.enabled ? (
+                  <Badge tone="ok">사용</Badge>
+                ) : (
+                  <Badge>꺼짐</Badge>
+                )
+              ) : (
+                <Badge tone="warn">미설정</Badge>
+              )}
+              {row && (
+                <button
+                  className="ml-auto text-[12px] text-fg-muted underline-offset-2 hover:underline"
+                  onClick={() => toggle(p, !row.enabled)}
+                >
+                  {row.enabled ? '끄기' : '켜기'}
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <input
+                value={valueOf(p)}
+                onChange={(e) => setDraft((d) => ({ ...d, [p]: e.target.value }))}
+                placeholder="클라이언트 ID (콤마로 여러 개)"
+                className={`${input} min-w-60 flex-1 font-mono text-[12px]`}
+              />
+              <Button variant={changed ? 'primary' : 'default'} disabled={!changed} onClick={() => save(p)}>
+                저장
+              </Button>
+            </div>
+          </div>
+        );
+      })}
+
+      <p className="text-[12px] leading-relaxed text-fg-muted">
+        구글은 <strong>웹 클라이언트 ID</strong>를 반드시 포함하세요 — 안드로이드·iOS 네이티브 로그인도 idToken은 웹
+        클라이언트 ID로 발급됩니다. 빠뜨리면 “설정은 다 했는데 로그인만 안 되는” 상태가 됩니다. 클라이언트 ID는 앱
+        번들에 박히는 공개값이라 여기 저장해도 안전합니다.
+      </p>
+    </section>
   );
 }
 

@@ -15,6 +15,7 @@ import { reportError } from './observability';
 export const LIMITS = {
   ticket: { limit: 5, windowSec: 600 }, // 문의 접수: 5회/600초 (IP)
   bootstrap: { limit: 60, windowSec: 60 }, // 부팅 조회: 60회/60초 (IP) — 읽기라 넉넉히
+  login: { limit: 20, windowSec: 60 }, // 로그인: 20회/60초 (IP) — 토큰 검증은 외부 왕복이라 남용 시 비용이 든다
 } as const;
 
 export type LimiterName = keyof typeof LIMITS;
@@ -42,7 +43,7 @@ function getLimiters(): Record<LimiterName, RatelimitLike> | null {
         prefix: `rl:${name}`,
         limiter: Ratelimit.slidingWindow(LIMITS[name].limit, `${LIMITS[name].windowSec} s`),
       });
-    cachedLimiters = { ticket: make('ticket'), bootstrap: make('bootstrap') };
+    cachedLimiters = { ticket: make('ticket'), bootstrap: make('bootstrap'), login: make('login') };
     return cachedLimiters;
   } catch (e) {
     reportError(e, 'ratelimit/init');
