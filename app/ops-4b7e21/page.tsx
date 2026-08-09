@@ -125,8 +125,13 @@ function urlState(): { tab: Tab; app: string } {
 
 // 회색 배경 위에 흰 카드가 얕게 떠 보이도록 — 테두리 하나로만 구분하면 밀도가 높을 때 답답해진다
 const card = 'rounded-card border border-border bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
-const input =
-  'w-full rounded-lg border border-border bg-surface px-3 py-2 text-[13.5px] placeholder:text-fg-muted/55 transition-colors focus:border-accent';
+const field =
+  'w-full rounded-lg border border-border bg-surface px-3 text-[13.5px] placeholder:text-fg-muted/55 transition-colors focus:border-accent';
+// 한 줄 입력은 **높이를 padding으로 만들지 않는다**. 폰트별 line-height 차이 때문에 py-2로는
+// 옆에 선 h-9 버튼과 1~2px씩 어긋난다. Button과 같은 h-9를 쓰면 한 줄에 나열해도 딱 맞는다.
+const input = `${field} h-9`;
+// 여러 줄은 높이가 내용에 따라 늘어야 하므로 h-9 대신 padding으로 만든다
+const textarea = `${field} py-2`;
 /** 섹션 제목 — 카드 안 소제목의 위계를 한 곳에서 통일한다 */
 const sectionTitle = 'text-[13px] font-semibold tracking-tight';
 
@@ -763,7 +768,7 @@ function Announcements({
             <select
               value={form.kind}
               onChange={(e) => setForm({ ...form, kind: e.target.value })}
-              className="rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+              className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
             >
               <option value="notice">공지</option>
               <option value="event">이벤트</option>
@@ -779,7 +784,7 @@ function Announcements({
             <button
               type="button"
               onClick={() => setForm({ ...form, pinned: !form.pinned })}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
                 form.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
               }`}
             >
@@ -791,7 +796,7 @@ function Announcements({
             placeholder="내용 (줄바꿈은 앱에서 그대로 보입니다)"
             value={form.body}
             onChange={(e) => setForm({ ...form, body: e.target.value })}
-            className={`${input} min-h-28 resize-y`}
+            className={`${textarea} min-h-28 resize-y`}
             maxLength={10000}
           />
 
@@ -831,7 +836,7 @@ function Announcements({
                   <select
                     value={edit.kind}
                     onChange={(e) => setEdit({ ...edit, kind: e.target.value })}
-                    className="rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+                    className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
                   >
                     <option value="notice">공지</option>
                     <option value="event">이벤트</option>
@@ -846,7 +851,7 @@ function Announcements({
                   <button
                     type="button"
                     onClick={() => setEdit({ ...edit, pinned: !edit.pinned })}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
                       edit.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
                     }`}
                   >
@@ -857,7 +862,7 @@ function Announcements({
                 <textarea
                   value={edit.body}
                   onChange={(e) => setEdit({ ...edit, body: e.target.value })}
-                  className={`${input} min-h-32 resize-y`}
+                  className={`${textarea} min-h-32 resize-y`}
                   maxLength={10000}
                 />
 
@@ -1139,7 +1144,7 @@ function SettingsTab({ api, appCode, s, reload, onError, flash }: Common & { app
           <Field label="점검 화면 내용">
             <textarea
               defaultValue={s.maintenanceBody ?? ''}
-              className={`${input} min-h-20 resize-y`}
+              className={`${textarea} min-h-20 resize-y`}
               onBlur={(e) => e.target.value !== (s.maintenanceBody ?? '') && save({ maintenanceBody: e.target.value })}
             />
           </Field>
