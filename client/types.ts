@@ -7,11 +7,13 @@
 export type SupportCategory = 'bug' | 'suggestion' | 'question' | 'etc';
 
 export type FailReason =
-  | 'not-configured' // 서버 URL이 빌드에 안 박힌 상태
+  | 'not-configured' // 서버 URL이 빌드에 안 박혔거나, 서버가 로그인을 아직 못 여는 상태(503)
   | 'offline' // 네트워크 불가 / 타임아웃
   | 'too-short' // 본문이 최소 길이 미만
   | 'rate-limited' // 접수 한도 초과
   | 'not-found' // 앱 미등록/비활성 (서버에 app_code가 없음)
+  | 'unauthorized' // 로그인 실패 / 세션 만료·무효 (세션은 이 시점에 폐기된다)
+  | 'not-signed-in' // 로컬에 세션이 없음 — 서버에 물어보지도 않은 상태
   | 'error'; // 서버 오류
 
 export type Result<T> = ({ ok: true } & T) | { ok: false; reason: FailReason };
@@ -36,6 +38,45 @@ export interface Bootstrap {
   announcements: AnnouncementItem[];
 }
 
+// ───────────────────────── 로그인 ─────────────────────────
+
+/** 지금 서버가 검증할 수 있는 공급자. kakao·apple은 서버에 검증기가 붙는 시점에 열린다. */
+export type AuthProviderId = 'google' | 'kakao' | 'apple';
+
+/** 우리 서버가 아는 "나". providerId(구글 sub 등)는 앱에 내려주지 않는다. */
+export interface Subject {
+  id: string;
+  email: string | null; // 공급자가 email_verified로 확인해 준 주소만 채워진다
+  provider?: string;
+  createdAt?: string;
+}
+
+export interface MyInquiry {
+  id: string;
+  category: SupportCategory;
+  content: string;
+  status: 'open' | 'replied' | 'resolved';
+  /** 운영자 답변. 이게 로그인의 존재 이유다(익명 문의는 돌려줄 경로가 없다). */
+  reply: string | null;
+  createdAt: string;
+  repliedAt: string | null;
+}
+
+/**
+ * 세션 토큰을 앱 재실행 후에도 유지하려면 저장소를 넘긴다.
+ * SDK는 의존성 0을 지켜야 해서 AsyncStorage를 직접 import하지 않는다 — 앱이 주입한다.
+ *
+ *   import AsyncStorage from '@react-native-async-storage/async-storage';
+ *   createCommonServer({ ..., storage: AsyncStorage })
+ *
+ * 넘기지 않으면 세션은 **메모리에만** 산다(앱을 껐다 켜면 다시 로그인해야 한다).
+ */
+export interface SessionStorage {
+  getItem(key: string): Promise<string | null> | string | null;
+  setItem(key: string, value: string): Promise<void> | void;
+  removeItem(key: string): Promise<void> | void;
+}
+
 export interface CommonServerConfig {
   /** EXPO_PUBLIC_SERVER_URL 등. 빈 문자열이면 모든 호출이 'not-configured'로 떨어진다. */
   baseUrl: string;
@@ -47,4 +88,6 @@ export interface CommonServerConfig {
   platform: string;
   /** 기본 10초. */
   timeoutMs?: number;
+  /** 세션 영속화. 없으면 메모리 전용 — 로그인 없는 앱은 넘기지 않아도 된다. */
+  storage?: SessionStorage;
 }

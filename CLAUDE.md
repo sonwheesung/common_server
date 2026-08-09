@@ -53,6 +53,8 @@ npm run db:push      # ⚠ Session/Direct(:5432) DATABASE_URL 로 실행할 것(
 node tools/seed.ts <app_code> "<이름>"                       # 앱 최초 등록
 BASE_URL=... node tools/_dv_public.ts                        # 공개 라우트 가드
 BASE_URL=... ADMIN_TOKEN=... node tools/_dv_admin.ts         # 관리자 fail-closed 가드
+BASE_URL=... node tools/_dv_auth.ts                          # 로그인·세션 가드
+BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서버 계약과 맞는지
 ```
 
 `tools/*.ts`는 Node 22의 타입 스트리핑으로 `node`가 직접 실행한다(tsx 불필요).
