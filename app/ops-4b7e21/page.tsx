@@ -17,6 +17,7 @@ import {
   AlertTriangle,
   Boxes,
   Check,
+  ChevronLeft,
   Inbox,
   LayoutDashboard,
   Loader2,
@@ -26,7 +27,6 @@ import {
   Menu,
   MessageSquare,
   Moon,
-  Pencil,
   Pin,
   Plus,
   RefreshCw,
@@ -683,6 +683,80 @@ function Overview({
 
 // ───────────────────────── 공지 ─────────────────────────
 
+const EMPTY_ANN = { kind: 'notice', title: '', body: '', pinned: false, startsAt: '', endsAt: '' };
+type AnnDraft = typeof EMPTY_ANN;
+
+/** 공지의 현재 노출 상태 — 목록과 상세가 같은 판정을 써야 한다(한쪽만 "노출 중"이면 신뢰를 잃는다). */
+function annState(a: Announcement, now: number): { label: string; tone: 'muted' | 'ok' | 'warn'; ended: boolean } {
+  if (a.endsAt && new Date(a.endsAt).getTime() < now) return { label: '종료', tone: 'muted', ended: true };
+  if (new Date(a.startsAt).getTime() <= now) return { label: '노출 중', tone: 'ok', ended: false };
+  return { label: '예정', tone: 'warn', ended: false };
+}
+
+/** 등록·수정이 공유하는 입력부. 갈라두면 필드를 추가할 때 한쪽만 고치는 사고가 난다. */
+function AnnFields({ value, onChange }: { value: AnnDraft; onChange: (v: AnnDraft) => void }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        <select
+          value={value.kind}
+          onChange={(e) => onChange({ ...value, kind: e.target.value })}
+          className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
+        >
+          <option value="notice">공지</option>
+          <option value="event">이벤트</option>
+          <option value="update">업데이트</option>
+        </select>
+        <input
+          placeholder="제목"
+          value={value.title}
+          onChange={(e) => onChange({ ...value, title: e.target.value })}
+          className={`${input} min-w-60 flex-1`}
+          maxLength={200}
+        />
+        <button
+          type="button"
+          onClick={() => onChange({ ...value, pinned: !value.pinned })}
+          className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
+            value.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
+          }`}
+        >
+          <Pin className="size-4" /> 상단 고정
+        </button>
+      </div>
+
+      <textarea
+        placeholder="내용 (줄바꿈은 앱에서 그대로 보입니다)"
+        value={value.body}
+        onChange={(e) => onChange({ ...value, body: e.target.value })}
+        className={`${textarea} min-h-48 resize-y leading-relaxed`}
+        maxLength={10000}
+      />
+
+      <div className="flex flex-wrap items-center gap-2 text-[13px]">
+        <span className="text-fg-muted">노출 기간</span>
+        <input
+          type="datetime-local"
+          value={value.startsAt}
+          onChange={(e) => onChange({ ...value, startsAt: e.target.value })}
+          className="h-9 rounded-lg border border-border bg-surface px-2.5 text-[13px]"
+        />
+        <span className="text-fg-muted">~</span>
+        <input
+          type="datetime-local"
+          value={value.endsAt}
+          onChange={(e) => onChange({ ...value, endsAt: e.target.value })}
+          className="h-9 rounded-lg border border-border bg-surface px-2.5 text-[13px]"
+        />
+        <span className="text-[12px] text-fg-muted">비우면 즉시 시작 · 무기한</span>
+      </div>
+    </div>
+  );
+}
+
+// 목록 → (더블클릭) 상세·수정 / (등록 버튼) 새 공지.
+// 전에는 등록 폼이 목록 위에 상주하고 본문 전체가 모든 행에 펼쳐져 있어, 공지가 늘수록
+// "지금 뭐가 걸려 있나"를 한눈에 볼 수 없었다. 목록의 일은 **훑는 것**이고 편집은 별도 화면의 일이다.
 function Announcements({
   api,
   appCode,
@@ -691,18 +765,74 @@ function Announcements({
   onError,
   flash,
 }: Common & { appCode: string; rows: Announcement[] }) {
-  const [form, setForm] = useState({ kind: 'notice', title: '', body: '', pinned: false, startsAt: '', endsAt: '' });
+  const [view, setView] = useState<{ mode: 'list' } | { mode: 'create' } | { mode: 'detail'; id: string }>({
+    mode: 'list',
+  });
+  const [draft, setDraft] = useState<AnnDraft>(EMPTY_ANN);
   const [busy, setBusy] = useState(false);
 
-  const submit = async () => {
-    if (!form.title.trim() || !form.body.trim()) return onError('제목과 내용을 채우세요');
+  const now = Date.now();
+  // 상세 중 다른 곳에서 삭제됐다면 원본이 사라진다 — 그 경우 목록으로 되돌린다(빈 화면을 남기지 않는다)
+  const current = view.mode === 'detail' ? (rows.find((a) => a.id === view.id) ?? null) : null;
+  const draftOf = (a: Announcement): AnnDraft => ({
+    kind: a.kind,
+    title: a.title,
+    body: a.body,
+    pinned: a.pinned,
+    startsAt: toLocalInput(a.startsAt),
+    endsAt: toLocalInput(a.endsAt),
+  });
+
+  // 저장하지 않은 편집이 있는지 — 화면을 뜨기 전에 물어보려면 필요하다
+  const dirty = current
+    ? JSON.stringify(draft) !== JSON.stringify(draftOf(current))
+    : view.mode === 'create' && (draft.title.trim() !== '' || draft.body.trim() !== '');
+
+  const openDetail = (a: Announcement) => {
+    setDraft(draftOf(a));
+    onError('');
+    setView({ mode: 'detail', id: a.id });
+  };
+  const openCreate = () => {
+    setDraft(EMPTY_ANN);
+    onError('');
+    setView({ mode: 'create' });
+  };
+  const backToList = () => {
+    if (dirty && !confirm('저장하지 않은 내용이 있습니다. 목록으로 돌아갈까요?')) return;
+    onError('');
+    setView({ mode: 'list' });
+  };
+
+  const create = async () => {
+    if (!draft.title.trim() || !draft.body.trim()) return onError('제목과 내용을 채우세요');
     setBusy(true);
     try {
-      await api('announcements', { method: 'POST', body: JSON.stringify({ appCode, ...form }) });
-      setForm({ kind: 'notice', title: '', body: '', pinned: false, startsAt: '', endsAt: '' });
+      await api('announcements', { method: 'POST', body: JSON.stringify({ appCode, ...draft }) });
       onError('');
       await reload();
       flash('공지를 발행했습니다');
+      setDraft(EMPTY_ANN);
+      setView({ mode: 'list' });
+    } catch (e) {
+      onError(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 서버는 처음부터 PATCH를 지원했다. 오타 하나 때문에 지우고 다시 쓰면 id가 바뀌는데,
+  // id는 앱의 읽음 처리 키라 **이미 읽은 사람에게도 다시 안읽음으로 뜬다.** 수정은 삭제-재작성으로 대체할 수 없다.
+  const save = async (id: string) => {
+    if (!draft.title.trim() || !draft.body.trim()) return onError('제목과 내용을 채우세요');
+    setBusy(true);
+    try {
+      // 폼 전체를 보낸다 — endsAt을 비우면 서버가 null(무기한)로 되돌린다.
+      await api('announcements', { method: 'PATCH', body: JSON.stringify({ id, ...draft }) });
+      onError('');
+      await reload();
+      flash('수정했습니다');
+      setView({ mode: 'list' });
     } catch (e) {
       onError(String((e as Error).message));
     } finally {
@@ -712,44 +842,13 @@ function Announcements({
 
   const remove = async (a: Announcement) => {
     if (!confirm(`"${a.title}"\n\n이 공지를 삭제할까요? 되돌릴 수 없습니다.`)) return;
-    try {
-      await api(`announcements?id=${a.id}`, { method: 'DELETE' });
-      await reload();
-      flash('삭제했습니다');
-    } catch (e) {
-      onError(String((e as Error).message));
-    }
-  };
-
-  // ── 수정 ──
-  // 서버는 처음부터 PATCH를 지원했는데 화면에 노출하지 않아 "고칠 수 없는 공지"가 됐다.
-  // 오타 하나 때문에 지우고 다시 쓰면 id가 바뀌고, id는 앱의 읽음 처리 키라 **이미 읽은 사람에게도 다시 안읽음으로 뜬다.**
-  // 그래서 수정은 삭제-재작성으로 대체할 수 없다.
-  const [editing, setEditing] = useState<string | null>(null);
-  const [edit, setEdit] = useState({ kind: 'notice', title: '', body: '', pinned: false, startsAt: '', endsAt: '' });
-
-  const beginEdit = (a: Announcement) => {
-    setEditing(a.id);
-    setEdit({
-      kind: a.kind,
-      title: a.title,
-      body: a.body,
-      pinned: a.pinned,
-      startsAt: toLocalInput(a.startsAt),
-      endsAt: toLocalInput(a.endsAt),
-    });
-  };
-
-  const saveEdit = async (id: string) => {
-    if (!edit.title.trim() || !edit.body.trim()) return onError('제목과 내용을 채우세요');
     setBusy(true);
     try {
-      // 폼 전체를 보낸다 — endsAt을 비우면 서버가 null(무기한)로 되돌린다.
-      await api('announcements', { method: 'PATCH', body: JSON.stringify({ id, ...edit }) });
-      setEditing(null);
+      await api(`announcements?id=${a.id}`, { method: 'DELETE' });
       onError('');
       await reload();
-      flash('수정했습니다');
+      flash('삭제했습니다');
+      setView({ mode: 'list' });
     } catch (e) {
       onError(String((e as Error).message));
     } finally {
@@ -757,179 +856,113 @@ function Announcements({
     }
   };
 
-  const now = Date.now();
+  // ── 등록 ──
+  if (view.mode === 'create') {
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={backToList} disabled={busy}>
+            <ChevronLeft className="size-4" /> 목록
+          </Button>
+          <h2 className={sectionTitle}>새 공지</h2>
+          <Button variant="primary" className="ml-auto" onClick={create} disabled={busy}>
+            <Plus className="size-4" /> 발행
+          </Button>
+        </div>
+        <section className={`${card} p-6`}>
+          <AnnFields value={draft} onChange={setDraft} />
+        </section>
+      </div>
+    );
+  }
 
-  return (
-    <div className="space-y-4">
-      <section className={`${card} p-6`}>
-        <h2 className={`mb-4 ${sectionTitle}`}>새 공지</h2>
-        <div className="space-y-3">
-          <div className="flex flex-wrap gap-2">
-            <select
-              value={form.kind}
-              onChange={(e) => setForm({ ...form, kind: e.target.value })}
-              className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
-            >
-              <option value="notice">공지</option>
-              <option value="event">이벤트</option>
-              <option value="update">업데이트</option>
-            </select>
-            <input
-              placeholder="제목"
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-              className={`${input} min-w-60 flex-1`}
-              maxLength={200}
-            />
-            <button
-              type="button"
-              onClick={() => setForm({ ...form, pinned: !form.pinned })}
-              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
-                form.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
-              }`}
-            >
-              <Pin className="size-4" /> 상단 고정
-            </button>
-          </div>
-
-          <textarea
-            placeholder="내용 (줄바꿈은 앱에서 그대로 보입니다)"
-            value={form.body}
-            onChange={(e) => setForm({ ...form, body: e.target.value })}
-            className={`${textarea} min-h-28 resize-y`}
-            maxLength={10000}
-          />
-
-          <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="text-fg-muted">노출 기간</span>
-            <input
-              type="datetime-local"
-              value={form.startsAt}
-              onChange={(e) => setForm({ ...form, startsAt: e.target.value })}
-              className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
-            />
-            <span className="text-fg-muted">~</span>
-            <input
-              type="datetime-local"
-              value={form.endsAt}
-              onChange={(e) => setForm({ ...form, endsAt: e.target.value })}
-              className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
-            />
-            <span className="text-xs text-fg-muted">비우면 즉시 시작 · 무기한</span>
-            <Button variant="primary" className="ml-auto" onClick={submit} disabled={busy}>
-              <Plus className="size-4" /> 발행
+  // ── 상세·수정 ──
+  if (view.mode === 'detail' && current) {
+    const st = annState(current, now);
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={backToList} disabled={busy}>
+            <ChevronLeft className="size-4" /> 목록
+          </Button>
+          <Badge tone={st.tone}>{st.label}</Badge>
+          {current.pinned && (
+            <Badge tone="accent">
+              <Pin className="mr-1 size-3" /> 고정
+            </Badge>
+          )}
+          <div className="ml-auto flex gap-2">
+            <Button variant="danger" onClick={() => remove(current)} disabled={busy}>
+              <Trash2 className="size-4" /> 삭제
+            </Button>
+            <Button variant="primary" onClick={() => save(current.id)} disabled={busy || !dirty}>
+              <Check className="size-4" /> 저장
             </Button>
           </div>
         </div>
-      </section>
 
-      {rows.map((a) => {
-        const started = new Date(a.startsAt).getTime() <= now;
-        const ended = a.endsAt ? new Date(a.endsAt).getTime() < now : false;
+        <section className={`${card} p-6`}>
+          <AnnFields value={draft} onChange={setDraft} />
+        </section>
 
-        if (editing === a.id) {
-          return (
-            <article key={a.id} className="rounded-card border-2 border-accent bg-surface p-5">
-              <h2 className="mb-4 text-sm font-semibold text-accent">공지 수정</h2>
-              <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <select
-                    value={edit.kind}
-                    onChange={(e) => setEdit({ ...edit, kind: e.target.value })}
-                    className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
-                  >
-                    <option value="notice">공지</option>
-                    <option value="event">이벤트</option>
-                    <option value="update">업데이트</option>
-                  </select>
-                  <input
-                    value={edit.title}
-                    onChange={(e) => setEdit({ ...edit, title: e.target.value })}
-                    className={`${input} min-w-60 flex-1`}
-                    maxLength={200}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setEdit({ ...edit, pinned: !edit.pinned })}
-                    className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-medium transition-colors ${
-                      edit.pinned ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:bg-muted'
+        {dirty && <p className="text-[12px] text-warn">저장하지 않은 내용이 있습니다.</p>}
+      </div>
+    );
+  }
+
+  // ── 목록 ──
+  return (
+    <section className={card}>
+      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+        <div className="flex items-baseline gap-2">
+          <h2 className={sectionTitle}>공지 목록</h2>
+          <span className="text-[12px] text-fg-muted">{rows.length}건</span>
+        </div>
+        <Button variant="primary" onClick={openCreate}>
+          <Plus className="size-4" /> 등록
+        </Button>
+      </div>
+
+      {rows.length ? (
+        <>
+          <ul className="divide-y divide-border">
+            {rows.map((a) => {
+              const st = annState(a, now);
+              return (
+                <li key={a.id}>
+                  {/* 더블클릭이 진입 수단이지만 그것만이면 키보드로는 못 연다 — Enter도 같이 받는다 */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onDoubleClick={() => openDetail(a)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') openDetail(a);
+                    }}
+                    title="더블클릭하면 상세·수정 화면으로 이동합니다"
+                    className={`flex cursor-pointer select-none items-center gap-2.5 px-5 py-3 transition-colors hover:bg-muted focus:bg-muted focus:outline-none ${
+                      st.ended ? 'opacity-55' : ''
                     }`}
                   >
-                    <Pin className="size-4" /> 상단 고정
-                  </button>
-                </div>
-
-                <textarea
-                  value={edit.body}
-                  onChange={(e) => setEdit({ ...edit, body: e.target.value })}
-                  className={`${textarea} min-h-32 resize-y`}
-                  maxLength={10000}
-                />
-
-                <div className="flex flex-wrap items-center gap-2 text-sm">
-                  <span className="text-fg-muted">노출 기간</span>
-                  <input
-                    type="datetime-local"
-                    value={edit.startsAt}
-                    onChange={(e) => setEdit({ ...edit, startsAt: e.target.value })}
-                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
-                  />
-                  <span className="text-fg-muted">~</span>
-                  <input
-                    type="datetime-local"
-                    value={edit.endsAt}
-                    onChange={(e) => setEdit({ ...edit, endsAt: e.target.value })}
-                    className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
-                  />
-                  <span className="text-xs text-fg-muted">종료를 비우면 무기한</span>
-                  <div className="ml-auto flex gap-2">
-                    <Button onClick={() => setEditing(null)} disabled={busy}>
-                      취소
-                    </Button>
-                    <Button variant="primary" onClick={() => saveEdit(a.id)} disabled={busy}>
-                      <Check className="size-4" /> 저장
-                    </Button>
+                    <Badge tone={st.tone}>{st.label}</Badge>
+                    {a.pinned && <Pin className="size-3.5 shrink-0 text-accent" />}
+                    <span className="truncate text-[13.5px] font-medium">{a.title}</span>
+                    <Badge>{KIND_KO[a.kind] ?? a.kind}</Badge>
+                    <span className="ml-auto shrink-0 text-[12px] text-fg-muted">
+                      {fmt(a.startsAt)} ~ {a.endsAt ? fmt(a.endsAt) : '무기한'}
+                    </span>
                   </div>
-                </div>
-              </div>
-            </article>
-          );
-        }
-
-        return (
-          <article key={a.id} className={`${card} p-6 ${ended ? 'opacity-60' : ''}`}>
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  {ended ? <Badge>종료</Badge> : started ? <Badge tone="ok">노출 중</Badge> : <Badge tone="warn">예정</Badge>}
-                  {a.pinned && (
-                    <Badge tone="accent">
-                      <Pin className="mr-1 size-3" /> 고정
-                    </Badge>
-                  )}
-                  <Badge>{KIND_KO[a.kind] ?? a.kind}</Badge>
-                </div>
-                <h3 className="text-[14.5px] font-semibold tracking-tight">{a.title}</h3>
-                <p className="mt-2 whitespace-pre-wrap text-[13.5px] leading-relaxed text-fg-muted">{a.body}</p>
-                <p className="mt-3 text-[12px] text-fg-muted">
-                  {fmt(a.startsAt)} ~ {a.endsAt ? fmt(a.endsAt) : '무기한'}
-                </p>
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <Button onClick={() => beginEdit(a)}>
-                  <Pencil className="size-4" /> 수정
-                </Button>
-                <Button variant="danger" onClick={() => remove(a)}>
-                  <Trash2 className="size-4" /> 삭제
-                </Button>
-              </div>
-            </div>
-          </article>
-        );
-      })}
-
-      {!rows.length && <EmptyState icon={Megaphone}>발행된 공지가 없습니다.</EmptyState>}
-    </div>
+                </li>
+              );
+            })}
+          </ul>
+          <p className="border-t border-border px-5 py-2.5 text-[12px] text-fg-muted">
+            행을 더블클릭하면 상세·수정 화면으로 이동합니다.
+          </p>
+        </>
+      ) : (
+        <EmptyState icon={Megaphone}>발행된 공지가 없습니다. 우측 상단 “등록”으로 첫 공지를 올리세요.</EmptyState>
+      )}
+    </section>
   );
 }
 
