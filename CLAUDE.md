@@ -75,9 +75,16 @@ lib/                             admin·apps·notify·ratelimit·retention·obse
 | app_code | 앱 | 상태 |
 |----------|-----|------|
 | `myword` | `C:\project\my_word\my_word` (Expo, 로그인 없음) | 전환 예정 — 현재는 배구 서버의 `/api/ticket/anon` 사용 |
+| `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-09 등록. 문의는 **로그인 필수** 구조 |
 
 ⚠ **이미 스토어에 나간 my_word 버전은 계속 배구 서버를 호출한다.** 배구의 `ANON_TICKET_PROJECTS`에서
 `myword`를 빼면 구버전 문의가 죽는다. 구버전 수명이 다할 때까지 유지할 것.
+
+⚠ **jogak 문의는 디스코드 알림이 안 간다.** `DISCORD_TICKET_WEBHOOK_URL_JOGAK`(또는 앱 공통
+`DISCORD_TICKET_WEBHOOK_URL`)이 없어서 `notify`가 no-op이다. 콘솔을 직접 열어보기 전까지
+문의가 들어온 줄 모른다 — 웹훅을 넣고 재배포해야 알림이 붙는다.
+
+앱 코드는 `apps` 테이블이 allowlist라 재배포 없이 늘어나지만, **알림 채널만은 env라 재배포가 필요하다.**
 
 <!-- BEGIN:nextjs-agent-rules -->
 
