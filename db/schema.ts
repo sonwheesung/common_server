@@ -14,6 +14,15 @@ export const apps = pgTable('apps', {
   name: text('name').notNull(),
   active: boolean('active').notNull().default(true), // false면 공개 라우트가 404(존재 노출 안 함)
   ticketDailyCap: integer('ticket_daily_cap').notNull().default(30), // 24h 문의 총량 캡(익명 라우트 실질 방어선)
+  // ── RevenueCat 웹훅 ──
+  // env가 아니라 DB인 이유는 위와 같다(앱 추가에 재배포 불필요). 다만 이건 **진짜 시크릿**이라
+  // 원문을 두지 않고 sha256만 둔다 — 이 DB가 읽히는 사고(Supabase Data API 오설정 등)가
+  // "문의 본문 유출"에서 "엔타이틀먼트 위조 가능"으로 등급이 오르지 않게.
+  // sha256은 KDF가 아니므로 **고엔트로피 값만 받는다**(콘솔이 32바이트를 생성해준다).
+  rcWebhookSecretHash: text('rc_webhook_secret_hash'), // null = 그 앱 웹훅 전면 거부(fail-closed)
+  // 허용 엔타이틀먼트 키(콤마 구분). RC 대시보드의 오타가 유령 키를 만들지 않게 하는 **필터**다.
+  // 상품→키 매핑이 아니다 — 매핑을 우리가 들면 RC의 attach 누락이 우리 매핑에 가려진다.
+  entitlementKeys: text('entitlement_keys').notNull().default('pro'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -136,9 +145,89 @@ export const appAuthProviders = pgTable(
   (t) => [primaryKey({ columns: [t.appCode, t.provider] })],
 );
 
+// ── 엔타이틀먼트(구독·광고제거) ── RevenueCat 웹훅이 진실을 밀어넣는다. PLAN §8 Phase 9.
+//
+// **`active`를 저장하지 않는다.** 저장하면 순서역전 방어가 "이벤트 시각 비교"라는 로직 하나에 전부 걸리고,
+// 그게 틀리면 조용히 틀린다. 대신 만료시각을 두고 읽을 때 계산한다:
+//
+//   active = expiresAt > now
+//            AND (graceUntil은 별도로 살림)
+//            AND NOT (revokedTxnId = lastTxnId)
+//
+// 갱신 계열(INITIAL·RENEWAL·UNCANCELLATION)은 expiresAt을 **max()로만** 움직인다 → 교환법칙이 성립해
+// 도착 순서와 무관하게 같은 상태로 수렴한다(배구의 가법 원장이 순서역전에 안전했던 것과 같은 성질).
+// 반면 PRODUCT_CHANGE·EXPIRATION은 만료를 **앞당길 수 있어** max()로 못 다룬다 → 덮어쓰되 lastEventAt으로 막는다.
+// 시각 비교가 필요한 곳을 그 둘로 좁힌 것이 이 설계의 요점이다.
+export const entitlements = pgTable(
+  'entitlements',
+  {
+    appCode: text('app_code')
+      .notNull()
+      .references(() => apps.appCode),
+    subjectId: uuid('subject_id')
+      .notNull()
+      .references(() => subjects.id),
+    // RC의 entitlement_ids를 그대로 쓴다. 상품→키 매핑을 우리가 또 들면 RC의 attach 누락을
+    // 우리 매핑이 가려버린다(누락은 "빈 배열"로 드러나야 한다). apps.entitlementKeys는 필터일 뿐이다.
+    key: text('key').notNull(), // 'pro'
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // 결제 실패 유예. 여기서 바로 끊으면 카드 갱신 중인 사람의 백업이 멈춘다.
+    graceUntil: timestamp('grace_until', { withTimezone: true }),
+    willRenew: boolean('will_renew').notNull().default(true), // CANCELLATION = 해지 예약일 뿐 아직 활성
+    // 회수를 **거래에 묶는다**. 영구 플래그로 두면 "한 기간분만 환불되고 구독은 살아있는" 경우
+    // 이후 갱신이 와도 영원히 비활성이 된다("돈은 내는데 pro가 아닌" 상태 — 제일 나쁜 실패 모드).
+    // 거래 id로 비교하면 다음 갱신(새 txn)에서 자동으로 풀린다.
+    lastTxnId: text('last_txn_id'),
+    revokedTxnId: text('revoked_txn_id'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }), // 표시·감사용(판정은 revokedTxnId로 한다)
+    productId: text('product_id'),
+    environment: text('environment').notNull().default('PRODUCTION'), // PRODUCTION | SANDBOX
+    // PRODUCT_CHANGE·EXPIRATION의 순서 가드. 갱신 계열은 max()라 이 값을 안 본다.
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.subjectId, t.key] }),
+    index('ent_app_key_idx').on(t.appCode, t.key),
+  ],
+);
+
+// ── 결제 이벤트 감사 로그(append-only) ── 멱등과 감사를 한 테이블로 겸한다.
+// rcEventId UNIQUE가 곧 멱등키다 — RC는 웹훅을 재전송하므로 이게 없으면 같은 갱신이 만료를 두 번 민다.
+//
+// 판정 결과(outcome)를 함께 남긴다. "무시했다"도 기록이어야 한다 — 안 남기면 결제가 안 붙었을 때
+// 웹훅이 안 온 건지 와서 무시된 건지 구분할 방법이 없다.
+export const purchaseEvents = pgTable(
+  'purchase_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    appCode: text('app_code').notNull(),
+    rcEventId: text('rc_event_id').notNull(),
+    type: text('type').notNull(), // INITIAL_PURCHASE | RENEWAL | ...
+    appUserId: text('app_user_id'), // RC가 보낸 원문(비-UUID여도 기록은 남긴다)
+    subjectId: uuid('subject_id'), // 해석 성공 시에만. FK를 걸지 않는다 — 미해석 이벤트도 남겨야 한다
+    productId: text('product_id'),
+    entitlementKey: text('entitlement_key'),
+    storeTxnId: text('store_txn_id'),
+    environment: text('environment'),
+    outcome: text('outcome').notNull(), // applied | deduped | ignored | rejected
+    reason: text('reason'), // ignored/rejected 사유(anonymous · unknown-subject · sandbox · stale · unknown-key ...)
+    eventAt: timestamp('event_at', { withTimezone: true }),
+    raw: text('raw'), // 원문 JSON(잘라서). 사후 재구성이 가능해야 한다
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('purchase_events_rc_event_uniq').on(t.rcEventId),
+    index('purchase_events_app_created_idx').on(t.appCode, t.createdAt),
+    index('purchase_events_subject_idx').on(t.subjectId),
+  ],
+);
+
 export type App = typeof apps.$inferSelect;
 export type AppSettings = typeof appSettings.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
 export type Ticket = typeof tickets.$inferSelect;
 export type Subject = typeof subjects.$inferSelect;
 export type AppAuthProvider = typeof appAuthProviders.$inferSelect;
+export type Entitlement = typeof entitlements.$inferSelect;
+export type PurchaseEvent = typeof purchaseEvents.$inferSelect;

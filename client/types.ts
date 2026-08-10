@@ -62,6 +62,16 @@ export interface MyInquiry {
   repliedAt: string | null;
 }
 
+/** 엔타이틀먼트(구독) 상태. 서버가 계산해서 내려준다 — 앱이 만료를 다시 판정하지 않는다. */
+export interface EntitlementView {
+  active: boolean;
+  /** ISO. 오프라인 캐시의 유효기한이다. 유예 중이면 유예 종료 시각이 온다. */
+  expiresAt: string | null;
+  willRenew: boolean;
+  /** 결제 실패 유예 중. 활성이지만 곧 끊길 수 있어 안내를 띄울 수 있다. */
+  inGracePeriod: boolean;
+}
+
 /**
  * 세션 토큰을 앱 재실행 후에도 유지하려면 저장소를 넘긴다.
  * SDK는 의존성 0을 지켜야 해서 AsyncStorage를 직접 import하지 않는다 — 앱이 주입한다.

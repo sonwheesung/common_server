@@ -18,7 +18,9 @@ import {
   Boxes,
   Check,
   ChevronLeft,
+  CreditCard,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   Loader2,
   Lock,
@@ -75,7 +77,7 @@ type Ticket = {
 
 type AuthProvider = { appCode: string; provider: string; audiences: string; enabled: boolean };
 
-type Tab = 'overview' | 'anns' | 'tickets' | 'settings' | 'apps';
+type Tab = 'overview' | 'anns' | 'tickets' | 'billing' | 'settings' | 'apps';
 
 const TOKEN_KEY = 'cs_admin_token';
 const CATEGORY_KO: Record<string, string> = { bug: '버그', suggestion: '건의', question: '질문', etc: '기타' };
@@ -86,6 +88,7 @@ const NAV: { id: Tab; icon: React.ElementType; label: string; grp?: string }[] =
   { id: 'overview', icon: LayoutDashboard, label: '대시보드' },
   { id: 'anns', icon: Megaphone, label: '공지', grp: '운영' },
   { id: 'tickets', icon: MessageSquare, label: '문의', grp: '운영' },
+  { id: 'billing', icon: CreditCard, label: '구독', grp: '운영' },
   { id: 'settings', icon: Wrench, label: '앱 설정', grp: '설정' },
   { id: 'apps', icon: Boxes, label: '앱 관리', grp: '설정' },
 ];
@@ -93,8 +96,17 @@ const TITLES: Record<Tab, string> = {
   overview: '대시보드',
   anns: '공지 관리',
   tickets: '문의',
+  billing: '구독',
   settings: '앱 설정',
   apps: '앱 관리',
+};
+
+/** 웹훅 감사행의 처리 결과 — 무시·거부도 기록이라 색으로 구분한다. */
+const OUTCOME: Record<string, { ko: string; tone: 'ok' | 'muted' | 'warn' | 'danger' }> = {
+  applied: { ko: '반영', tone: 'ok' },
+  deduped: { ko: '중복', tone: 'muted' },
+  ignored: { ko: '무시', tone: 'muted' },
+  rejected: { ko: '거부', tone: 'danger' },
 };
 
 const fmt = (iso: string | null) =>
@@ -555,6 +567,8 @@ export default function Ops() {
             <Announcements api={api} appCode={appCode} rows={anns} reload={loadApp} onError={setErr} flash={flash} />
           ) : tab === 'tickets' ? (
             <Tickets api={api} rows={tickets} reload={loadApp} onError={setErr} flash={flash} />
+          ) : tab === 'billing' ? (
+            <Billing api={api} appCode={appCode} onError={setErr} flash={flash} />
           ) : tab === 'settings' ? (
             <SettingsTab api={api} appCode={appCode} s={settings} reload={loadApp} onError={setErr} flash={flash} />
           ) : (
@@ -1086,6 +1100,184 @@ function Tickets({ api, rows, reload, onError, flash }: Common & { rows: Ticket[
       ))}
 
       {!filtered.length && <EmptyState icon={Inbox}>{status ? '해당 상태의 문의가 없습니다.' : '문의가 없습니다.'}</EmptyState>}
+    </div>
+  );
+}
+
+// ───────────────────────── 구독 ─────────────────────────
+
+type Subscriber = {
+  subjectId: string;
+  key: string;
+  email: string | null;
+  active: boolean;
+  expiresAt: string | null;
+  willRenew: boolean;
+  inGracePeriod: boolean;
+  productId: string | null;
+  environment: string;
+};
+type PurchaseEvent = {
+  id: string;
+  type: string;
+  outcome: string;
+  reason: string | null;
+  appUserId: string | null;
+  productId: string | null;
+  entitlementKey: string | null;
+  environment: string | null;
+  eventAt: string | null;
+  createdAt: string;
+};
+type BillingData = {
+  configured: boolean;
+  entitlementKeys: string;
+  sandboxGrant: boolean;
+  activeCount: number;
+  subscribers: Subscriber[];
+  events: PurchaseEvent[];
+};
+
+function Billing({ api, appCode, onError, flash }: Omit<Common, 'reload'> & { appCode: string }) {
+  const [data, setData] = useState<BillingData | null>(null);
+  const [busy, setBusy] = useState(false);
+  // 생성된 시크릿은 **이 화면에서만** 존재한다(서버는 해시만 저장). 붙여넣기 전에 이탈하면 재발급해야 한다.
+  const [fresh, setFresh] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setData(await api(`billing?app=${appCode}`));
+    } catch (e) {
+      onError(String((e as Error).message));
+    }
+  }, [api, appCode, onError]);
+
+  useEffect(() => {
+    setFresh('');
+    void load();
+  }, [load]);
+
+  const generate = async () => {
+    if (data?.configured && !confirm('기존 시크릿이 즉시 무효가 됩니다.\nRC 대시보드에 새 값을 넣기 전까지 웹훅이 전부 거부됩니다.\n\n계속할까요?')) return;
+    setBusy(true);
+    try {
+      const j = await api('billing', { method: 'PUT', body: JSON.stringify({ appCode, generate: true }) });
+      setFresh(j.secret);
+      onError('');
+      await load();
+      flash('시크릿을 발급했습니다');
+    } catch (e) {
+      onError(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!data) return <EmptyState icon={Loader2}>불러오는 중…</EmptyState>;
+
+  const hookUrl = `${typeof window === 'undefined' ? '' : window.location.origin}/api/webhooks/revenuecat/${appCode}`;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat icon={CreditCard} label="활성 구독" value={data.activeCount} tone={data.activeCount ? 'ok' : 'muted'} />
+        <Stat
+          icon={KeyRound}
+          label="웹훅"
+          value={data.configured ? '연결됨' : '미설정'}
+          tone={data.configured ? 'ok' : 'danger'}
+          sub={data.configured ? undefined : '시크릿이 없으면 모든 웹훅이 401로 거부됩니다'}
+        />
+        <Stat
+          icon={AlertTriangle}
+          label="샌드박스 지급"
+          value={data.sandboxGrant ? 'ON' : 'OFF'}
+          tone={data.sandboxGrant ? 'warn' : 'muted'}
+          sub={data.sandboxGrant ? '테스트 결제가 실제 권한을 만듭니다 — 출시 전 끄세요' : '테스트 결제는 무시됩니다'}
+        />
+      </div>
+
+      <section className={`${card} p-6`}>
+        <h2 className={`mb-4 ${sectionTitle}`}>RevenueCat 웹훅</h2>
+
+        <Field label="URL" hint="RC 대시보드 → Integrations → Webhooks 에 넣습니다.">
+          <input readOnly value={hookUrl} className={`${input} font-mono text-[12px]`} onFocus={(e) => e.target.select()} />
+        </Field>
+
+        <div className="mt-4">
+          <Field
+            label="Authorization 시크릿"
+            hint="서버는 sha256만 저장합니다 — 원문은 아래에서 한 번만 보입니다. 다시 볼 수 없으니 바로 RC에 붙여넣으세요."
+          >
+            <div className="flex flex-wrap gap-2">
+              <Button variant={data.configured ? 'default' : 'primary'} onClick={generate} disabled={busy}>
+                <KeyRound className="size-4" /> {data.configured ? '재발급' : '발급'}
+              </Button>
+              {data.configured && <span className="self-center text-[12px] text-ok">설정됨</span>}
+            </div>
+          </Field>
+        </div>
+
+        {fresh && (
+          <div className="mt-3 rounded-lg border border-accent bg-accent-soft p-3">
+            <p className="mb-2 text-[12px] font-semibold text-accent">지금 복사하세요 — 이 값은 다시 표시되지 않습니다</p>
+            <input readOnly value={fresh} className={`${input} font-mono text-[12px]`} onFocus={(e) => e.target.select()} />
+          </div>
+        )}
+
+        <p className="mt-4 text-[12px] text-fg-muted">
+          허용 키: <code className="font-mono">{data.entitlementKeys}</code> — RC가 보낸 다른 키는 거부되고 아래 이력에 남습니다.
+        </p>
+      </section>
+
+      <section className={card}>
+        <div className="border-b border-border px-5 py-3.5">
+          <h2 className={sectionTitle}>구독자 {data.subscribers.length ? `(${data.subscribers.length})` : ''}</h2>
+        </div>
+        {data.subscribers.length ? (
+          <ul className="divide-y divide-border">
+            {data.subscribers.map((s) => (
+              <li key={`${s.subjectId}:${s.key}`} className="flex flex-wrap items-center gap-2 px-5 py-3">
+                <Badge tone={s.active ? 'ok' : 'muted'}>{s.active ? '활성' : '만료'}</Badge>
+                {s.inGracePeriod && <Badge tone="warn">결제 유예</Badge>}
+                {!s.willRenew && s.active && <Badge tone="warn">해지 예약</Badge>}
+                {s.environment === 'SANDBOX' && <Badge tone="warn">샌드박스</Badge>}
+                <span className="truncate text-[13.5px]">{s.email ?? <span className="text-fg-muted">이메일 없음</span>}</span>
+                <span className="text-[12px] text-fg-muted">{s.productId ?? '—'}</span>
+                <span className="ml-auto text-[12px] text-fg-muted">~ {fmt(s.expiresAt)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState icon={CreditCard}>아직 구독자가 없습니다.</EmptyState>
+        )}
+      </section>
+
+      <section className={card}>
+        <div className="border-b border-border px-5 py-3.5">
+          <h2 className={sectionTitle}>웹훅 이력</h2>
+          {/* 무시·거부도 남는다. 안 남기면 "결제가 안 붙었다"가 웹훅 미수신인지 수신 후 무시인지 구분되지 않는다 */}
+          <p className="mt-1 text-[12px] text-fg-muted">반영되지 않은 이벤트도 사유와 함께 남습니다.</p>
+        </div>
+        {data.events.length ? (
+          <ul className="divide-y divide-border">
+            {data.events.map((e) => {
+              const o = OUTCOME[e.outcome] ?? { ko: e.outcome, tone: 'muted' as const };
+              return (
+                <li key={e.id} className="flex flex-wrap items-center gap-2 px-5 py-2.5">
+                  <Badge tone={o.tone}>{o.ko}</Badge>
+                  <span className="font-mono text-[12px]">{e.type}</span>
+                  {e.reason && <span className="text-[12px] text-warn">{e.reason}</span>}
+                  <span className="truncate text-[12px] text-fg-muted">{e.productId ?? '—'}</span>
+                  <span className="ml-auto shrink-0 text-[12px] text-fg-muted">{fmt(e.createdAt)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <EmptyState icon={Inbox}>수신된 웹훅이 없습니다.</EmptyState>
+        )}
+      </section>
     </div>
   );
 }

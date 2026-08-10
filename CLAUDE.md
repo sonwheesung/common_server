@@ -55,6 +55,7 @@ BASE_URL=... node tools/_dv_public.ts                        # 공개 라우트 
 BASE_URL=... ADMIN_TOKEN=... node tools/_dv_admin.ts         # 관리자 fail-closed 가드
 BASE_URL=... node tools/_dv_auth.ts                          # 로그인·세션 가드
 BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서버 계약과 맞는지
+node tools/_dv_purchase.ts                                   # 결제 판정·상태전이(DB 불필요). BASE_URL 주면 라우트도
 ```
 
 `tools/*.ts`는 Node 22의 타입 스트리핑으로 `node`가 직접 실행한다(tsx 불필요).
@@ -62,12 +63,13 @@ BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서�
 ## 구조
 
 ```
-app/api/v1/{bootstrap,tickets}   공개 — 앱이 호출
+app/api/v1/{bootstrap,tickets,auth,entitlements}  공개 — 앱이 호출
+app/api/webhooks/revenuecat/[app]  RevenueCat 수신 (v1 밖 — 서버간, CORS 대상 아님)
 app/api/admin/*                  관리자 — Bearer ADMIN_TOKEN
 app/api/cron/purge               보관기간 파기(일 1회)
 app/ops-4b7e21                   관리자 콘솔 (경로는 보안 장치가 아님 — 방어는 ADMIN_TOKEN)
 client/                          앱에 **복사해서** 쓰는 SDK (monorepo 안 씀)
-lib/                             admin·apps·notify·ratelimit·retention·observability·sentryGate·afterSafe
+lib/                             admin·apps·auth·revenuecat·entitlement·notify·ratelimit·retention·observability·afterSafe
 ```
 
 ## 연동 중인 앱

@@ -297,7 +297,33 @@ couponRedemptions  (appCode, couponId, subjectId)  UNIQUE ← 1회 게이트
 보상은 **엔타이틀먼트/기간제 혜택**으로 한정하는 게 안전하다(예: 광고제거 30일). 공통 서버에 재화 지갑을 두면 앱마다 다른 화폐 정의·환불 정책·동시성 잠금까지 딸려온다.
 핵심 규약(배구 `lib/coupon.ts`): **검증 + redemption INSERT + 지급을 단일 트랜잭션**으로. 두 트랜잭션을 이으면 "기록만 남고 미지급" 크래시 창이 생긴다.
 
-### Phase 9 — 광고제거 (RevenueCat)
+### Phase 9 — 구독·엔타이틀먼트 (RevenueCat) — ✅ 서버 구현 완료 (2026-08-10)
+
+조각(`jogak`)의 월 구독(`pro`)이 첫 사용처다. 아래 원안과 달라진 점만 적는다(구현: `lib/revenuecat.ts`·`lib/entitlement.ts`).
+
+- **`active`를 저장하지 않는다.** `expiresAt`·`graceUntil`·`revokedTxnId`를 두고 읽을 때 계산한다.
+  갱신 계열(INITIAL·RENEWAL·UNCANCELLATION)은 만료를 `max()`로만 밀어 **교환법칙**이 성립 →
+  도착 순서가 뒤바뀌어도 같은 상태로 수렴한다(배구의 가법 원장이 순서역전에 안전했던 것과 같은 성질).
+  만료를 **앞당길 수 있는** PRODUCT_CHANGE·EXPIRATION만 덮어쓰기라 `lastEventAt` 가드가 붙는다.
+- **회수는 거래에 묶는다**(`revokedTxnId = lastTxnId`일 때만 비활성). 영구 플래그로 두면
+  한 기간분만 환불되고 구독이 살아 있을 때 이후 갱신이 와도 영원히 비활성 —
+  **"돈은 내는데 pro가 아닌"** 상태가 된다. 거래 비교면 새 갱신에서 자동으로 풀린다.
+- **판정·상태전이를 순수 함수로** 뺐다(`decideEvent`·`nextState`). 가드가 DB 없이 순서역전·환불 후 갱신을
+  검증할 수 있어야 한다 — DB 안에 숨은 판단은 검증되지 않는다.
+- **웹훅 시크릿은 sha256만 저장**하고 콘솔이 32바이트를 생성한다. 이 DB의 첫 자격증명이라,
+  읽히는 사고가 "문의 본문 유출"에서 "엔타이틀먼트 위조 가능"으로 등급이 오르지 않게.
+  sha256은 KDF가 아니므로 사람이 지은 값은 받지 않는다.
+- **엔타이틀먼트 키는 RC의 `entitlement_ids`를 그대로** 쓴다. 상품→키 매핑을 우리가 들면
+  RC의 attach 누락(빈 배열)이 우리 매핑에 가려진다. `apps.entitlementKeys`는 오타 필터일 뿐이다.
+- **탈퇴한 주체의 웹훅은 200**(ignored). 영원히 실패할 조건에 5xx를 주면 RC가 백오프로 재전송하며
+  에러 지표를 같은 이벤트 복제로 채운다.
+- **TRANSFER 필수.** 탈퇴 후 재가입하면 `subject_id`가 새로 생긴다(가명화로 UNIQUE가 풀리므로).
+  구독은 Play 계정 소유라 앱이 `restorePurchases()`를 부르면 RC가 소유자를 옮긴다. 처리 안 하면
+  "돈은 나가는데 pro가 아닌" 상태가 유지된다. RC의 이전은 **공유가 아니라 이동**이다.
+
+남은 것: 조각 서버용 `/api/internal/entitlements`(서비스 토큰) — 조각 서버가 생길 때.
+
+### Phase 9 원안 — 광고제거 (RevenueCat)
 ```
 entitlements (appCode, subjectId, key='remove_ads', source, storeTxnId, expiresAt?, revokedAt?)
 POST /api/v1/purchase/confirm          — 구매 직후 클라 확인
