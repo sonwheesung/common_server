@@ -4,6 +4,7 @@
 
 - Next.js 16 App Router (Vercel) + Supabase Postgres + Drizzle
 - 설계 문서: `docs/PLAN.md` — **변경 전에 먼저 읽을 것**
+- 새 앱 붙이기: `docs/ONBOARDING.md` — 순서 · 단계별 확인 명령 · 증상→원인 표
 
 ## 이 서버의 성질
 
