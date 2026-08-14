@@ -43,6 +43,24 @@ export async function ensureSubject(
   return inserted[0];
 }
 
+/**
+ * 기기 subject 확보(비회원 앱용 — 2026-08-14, 첫 사용처 linkmemo).
+ * deviceId는 앱이 만든 무작위 UUID이고 그 자체가 열쇠다 — 같은 값이면 같은 subject를 재사용한다(멱등).
+ * 이메일 등 개인정보는 없다. UNIQUE(appCode, provider, providerId)가 로그인과 같은 인덱스를 쓴다.
+ */
+export async function ensureDeviceSubject(appCode: string, deviceId: string): Promise<Subject> {
+  const now = new Date();
+  const inserted = await db
+    .insert(subjects)
+    .values({ appCode, kind: 'device', provider: 'device', providerId: deviceId, email: null, lastSeenAt: now })
+    .onConflictDoUpdate({
+      target: [subjects.appCode, subjects.provider, subjects.providerId],
+      set: { lastSeenAt: now },
+    })
+    .returning();
+  return inserted[0];
+}
+
 export interface Authed {
   subject: Subject;
 }

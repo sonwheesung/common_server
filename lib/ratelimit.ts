@@ -16,6 +16,7 @@ export const LIMITS = {
   ticket: { limit: 5, windowSec: 600 }, // 문의 접수: 5회/600초 (IP)
   bootstrap: { limit: 60, windowSec: 60 }, // 부팅 조회: 60회/60초 (IP) — 읽기라 넉넉히
   login: { limit: 20, windowSec: 60 }, // 로그인: 20회/60초 (IP) — 토큰 검증은 외부 왕복이라 남용 시 비용이 든다
+  device: { limit: 10, windowSec: 600 }, // 기기 등록: 10회/600초 (IP) — 정상 앱은 평생 1회면 된다. subject 행 스팸 방지
 } as const;
 
 export type LimiterName = keyof typeof LIMITS;
@@ -43,7 +44,7 @@ function getLimiters(): Record<LimiterName, RatelimitLike> | null {
         prefix: `rl:${name}`,
         limiter: Ratelimit.slidingWindow(LIMITS[name].limit, `${LIMITS[name].windowSec} s`),
       });
-    cachedLimiters = { ticket: make('ticket'), bootstrap: make('bootstrap'), login: make('login') };
+    cachedLimiters = { ticket: make('ticket'), bootstrap: make('bootstrap'), login: make('login'), device: make('device') };
     return cachedLimiters;
   } catch (e) {
     reportError(e, 'ratelimit/init');

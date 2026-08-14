@@ -289,6 +289,13 @@ Discord 웹훅 URL은 **DB에 넣지 않는다**(관리자 콘솔에 시크릿�
 `subjects` 테이블 + `POST /api/v1/devices`(토큰 발급) + `tickets.subjectId` nullable 추가.
 이게 들어오는 순간 **문의 답변 확인 · 쿠폰 · 광고제거**가 동시에 가능해진다.
 
+> **✅ device subject 구현(2026-08-14)** — 첫 사용처는 `linkmemo`(로그인 없는 앱의 문의 귀속).
+> `POST /api/v1/devices` body `{ app, deviceId(UUID) }` → `subjects(kind='device', provider='device',
+> provider_id=deviceId)` upsert(멱등) + 로그인과 동일한 세션 토큰 발급. IP 레이트리밋 `device` 버킷.
+> deviceId 형식은 UUID로 강제(쓰레기 값 차단). 이메일 없음 — 서버가 아는 건 무작위 UUID뿐이라
+> 개인정보 최소수집 원칙이 유지된다. 클라이언트는 SDK `registerDevice()`(SDK_VERSION 2026-08-14).
+> user 승격(디바이스→구글)은 미구현 — 필요해질 때.
+
 ### Phase 8 — 쿠폰
 ```
 coupons            (appCode, code, rewardType, rewardPayload, targetSubjectId?, startsAt, endsAt, disabled)

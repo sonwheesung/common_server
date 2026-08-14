@@ -19,7 +19,7 @@ import type {
 export type * from './types';
 
 /** 앱에 복사할 때 이 값을 복사본 주석에 남긴다 — 서버 계약이 바뀌었는지 판단하는 유일한 단서다. */
-export const SDK_VERSION = '2026-08-10';
+export const SDK_VERSION = '2026-08-14'; // +registerDevice (기기 subject — 비회원 앱 문의 귀속)
 
 const DEFAULT_TIMEOUT_MS = 10000;
 /** 서버가 요구하는 문의 최소 길이(라우트의 CONTENT_MIN과 같은 값). */
@@ -145,6 +145,37 @@ export function createCommonServer(cfg: CommonServerConfig) {
       if (res.ok) return { ok: true };
       if (res.status === 401) await setSession(null, null); // 죽은 토큰을 들고 계속 재시도하지 않는다
       return { ok: false, reason: mapFail(res.status) };
+    },
+
+    /**
+     * 기기 등록(비회원 앱 — 2026-08-14) → 세션 토큰 발급.
+     *
+     * deviceId는 **앱이 최초 1회 만든 무작위 UUID**를 SecureStore 등에 보관해 넘긴다. 같은 값이면
+     * 서버가 같은 subject를 돌려주므로(멱등) 재호출해도 안전하다 — 세션이 없거나 401일 때 다시 부르면 된다.
+     * 등록 후에는 sendInquiry가 자동으로 귀속되고 fetchMyInquiries로 답변을 볼 수 있다.
+     *
+     * ⚠ 로그인이 아니다 — 이메일도 이름도 없다. 앱 삭제·기기 변경으로 deviceId가 사라지면
+     *   이전 문의와의 연결도 끊긴다(그 한계를 화면에 고지할 것).
+     */
+    async registerDevice(deviceId: string): Promise<Result<{ subject: Subject }>> {
+      if (!baseUrl) return { ok: false, reason: 'not-configured' };
+      if (!deviceId) return { ok: false, reason: 'unauthorized' };
+
+      const res = await req('/api/v1/devices', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ app: cfg.appCode, deviceId }),
+      });
+      if (!res) return { ok: false, reason: 'offline' };
+      if (!res.ok) return { ok: false, reason: mapFail(res.status) };
+      try {
+        const j = (await res.json()) as { token?: string; subject?: Subject };
+        if (!j.token || !j.subject) return { ok: false, reason: 'error' };
+        await setSession(j.token, j.subject);
+        return { ok: true, subject: j.subject };
+      } catch {
+        return { ok: false, reason: 'error' };
+      }
     },
 
     // ───────────────────────── 로그인 ─────────────────────────
