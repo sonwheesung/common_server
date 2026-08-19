@@ -217,6 +217,9 @@ export const purchaseEvents = pgTable(
     outcome: text('outcome').notNull(), // applied | deduped | ignored | rejected
     reason: text('reason'), // ignored/rejected 사유(anonymous · unknown-subject · sandbox · stale · unknown-key ...)
     eventAt: timestamp('event_at', { withTimezone: true }),
+    // **이 이벤트가 만들어낸 만료 시각.** 2026-08-19 실결제 검증에서 "만료가 왜 이 값이 됐나"를
+    // 사후에 가르지 못했다(원문은 raw에 있었지만 조회·표시가 안 됐다). 판정 결과를 1급 필드로 남긴다.
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
     raw: text('raw'), // 원문 JSON(잘라서). 사후 재구성이 가능해야 한다
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

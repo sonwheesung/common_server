@@ -1127,6 +1127,8 @@ type PurchaseEvent = {
   entitlementKey: string | null;
   environment: string | null;
   eventAt: string | null;
+  /** 이 이벤트가 만들어낸 만료 시각. 없으면 만료를 안 건드린 이벤트(해지 예약·환불 등). */
+  expiresAt: string | null;
   createdAt: string;
 };
 type BillingData = {
@@ -1257,7 +1259,7 @@ function Billing({ api, appCode, onError, flash }: Omit<Common, 'reload'> & { ap
         <div className="border-b border-border px-5 py-3.5">
           <h2 className={sectionTitle}>웹훅 이력</h2>
           {/* 무시·거부도 남는다. 안 남기면 "결제가 안 붙었다"가 웹훅 미수신인지 수신 후 무시인지 구분되지 않는다 */}
-          <p className="mt-1 text-[12px] text-fg-muted">반영되지 않은 이벤트도 사유와 함께 남습니다.</p>
+          <p className="mt-1 text-[12px] text-fg-muted">반영되지 않은 이벤트도 사유와 함께 남습니다. → 뒤는 그 이벤트가 만든 만료 시각입니다.</p>
         </div>
         {data.events.length ? (
           <ul className="divide-y divide-border">
@@ -1269,6 +1271,8 @@ function Billing({ api, appCode, onError, flash }: Omit<Common, 'reload'> & { ap
                   <span className="font-mono text-[12px]">{e.type}</span>
                   {e.reason && <span className="text-[12px] text-warn">{e.reason}</span>}
                   <span className="truncate text-[12px] text-fg-muted">{e.productId ?? '—'}</span>
+                  {/* "만료가 왜 이 값이 됐나"를 사후에 못 가른 적이 있다(2026-08-19). 결과를 그 자리에 둔다. */}
+                  {e.expiresAt && <span className="shrink-0 font-mono text-[12px] text-fg-muted">→ {fmt(e.expiresAt)}</span>}
                   <span className="ml-auto shrink-0 text-[12px] text-fg-muted">{fmt(e.createdAt)}</span>
                 </li>
               );

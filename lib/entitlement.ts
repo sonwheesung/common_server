@@ -5,7 +5,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { apps, entitlements, purchaseEvents, subjects, type Entitlement } from '../db/schema';
-import { nextState, viewOf, type Decision, type EntitlementView, type RcEvent } from './revenuecat';
+import { nextState, viewOf, type Decision, type EntState, type EntitlementView, type RcEvent } from './revenuecat';
 import {
   PULL_COOLDOWN_SEC,
   PULL_RETRY_SEC,
@@ -50,6 +50,7 @@ export async function applyEvent(appCode: string, raw: RcEvent, d: Decision): Pr
       outcome: d.outcome as string,
       reason: d.reason ?? null,
       eventAt: d.eventAt ?? null,
+      expiresAt: null as Date | null, // 아래에서 nextState()의 결과로 채운다
       raw: JSON.stringify(raw).slice(0, RAW_MAX),
     };
 
@@ -77,6 +78,16 @@ export async function applyEvent(appCode: string, raw: RcEvent, d: Decision): Pr
       audit.subjectId = subject.id;
     }
 
+    // 상태 전이를 **감사행보다 먼저 계산한다**(읽기·순수 계산뿐 — 쓰기 순서는 그대로다).
+    // 그래야 "이 이벤트가 만들어낸 만료"를 감사행에 적을 수 있다.
+    let existing: Entitlement | undefined;
+    let next: EntState | null = null;
+    if (audit.outcome === 'applied' && subject && d.key) {
+      existing = await readEntitlement(tx, subject.id, d.key);
+      next = nextState(existing ?? null, d);
+      audit.expiresAt = next?.expiresAt ?? null;
+    }
+
     // 감사행 먼저. 충돌하면 이미 처리한 이벤트다(재전송) → 상태를 건드리지 않고 빠져나간다.
     const inserted = await tx.insert(purchaseEvents).values(audit).onConflictDoNothing().returning({ id: purchaseEvents.id });
     if (!inserted.length) return { status: 'deduped' };
@@ -94,7 +105,7 @@ export async function applyEvent(appCode: string, raw: RcEvent, d: Decision): Pr
         .where(and(eq(entitlements.key, d.key!), inArray(entitlements.subjectId, d.transferFrom)));
     }
 
-    await upsertEntitlement(tx, appCode, subject.id, d);
+    await writeEntitlement(tx, appCode, subject.id, d.key!, next);
     return { status: 'applied' };
   });
 }
@@ -105,17 +116,13 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * 상태 반영. 계산은 전부 `nextState()`(순수)가 하고 여기서는 읽고 쓰기만 한다 —
  * 순서역전·환불 후 갱신 같은 판단이 DB 안에 숨으면 가드가 검증할 수 없다.
  */
-async function upsertEntitlement(
+async function writeEntitlement(
   tx: Tx,
   appCode: string,
   subjectId: string,
-  d: Decision,
-  known?: Entitlement | null,
+  key: string,
+  next: EntState | null,
 ): Promise<boolean> {
-  const key = d.key!;
-  const existing = known !== undefined ? known : await readEntitlement(tx, subjectId, key);
-
-  const next = nextState(existing ?? null, d);
   if (!next) return false; // 과거 이벤트 — 감사행은 이미 남았다
 
   const row = { appCode, subjectId, key, ...next, updatedAt: new Date() };
@@ -160,6 +167,8 @@ export async function applyPull(appCode: string, subjectId: string, d: Decision)
     // 행도 없고 줄 것도 없다 = 그냥 미구독자다. 감사행을 남기면 미구독자 수만큼 행이 생긴다.
     if (!existing && !d.expiresAt && !d.graceUntil) return { status: 'ignored', reason: 'no-subscription' };
 
+    const next = nextState(existing ?? null, d);
+
     const audit = {
       appCode,
       rcEventId: pullEventId(subjectId, d), // 결정적 합성키 — 같은 스냅샷 반복 pull은 UNIQUE가 접는다
@@ -173,6 +182,7 @@ export async function applyPull(appCode: string, subjectId: string, d: Decision)
       outcome: 'applied',
       reason: null as string | null,
       eventAt: d.eventAt ?? null,
+      expiresAt: next?.expiresAt ?? null,
       raw: JSON.stringify({ source: 'pull', expiresAt: d.expiresAt, graceUntil: d.graceUntil, willRenew: d.willRenew }),
     };
 
@@ -180,7 +190,7 @@ export async function applyPull(appCode: string, subjectId: string, d: Decision)
     // 충돌 = 직전 pull과 같은 스냅샷이다. 상태도 같으므로 건드릴 것이 없다.
     if (!inserted.length) return { status: 'deduped' };
 
-    const applied = await upsertEntitlement(tx, appCode, subjectId, d, existing ?? null);
+    const applied = await writeEntitlement(tx, appCode, subjectId, d.key, next);
     return applied ? { status: 'applied' } : { status: 'ignored', reason: 'stale-snapshot' };
   });
 }
@@ -223,7 +233,11 @@ export const pullGate: PullGate = {
  * 이 앱·주체로 pull 1회. 라우트가 부르는 진입점 — **던지지 않는다**(runPull이 전부 삼킨다).
  * 허용 키는 웹훅과 같은 자리(`apps.entitlementKeys`)에서 온다. 두 경로가 다른 필터를 쓰면 갈린다.
  */
-export async function pullEntitlements(appCode: string, subjectId: string, opts: { fresh?: boolean } = {}): Promise<PullResult> {
+export async function pullEntitlements(
+  appCode: string,
+  subjectId: string,
+  opts: { fresh?: boolean; cooldownSec?: number } = {},
+): Promise<PullResult> {
   // 키가 없으면 apps 조회조차 하지 않는다 — 이 배포엔 pull이 없다.
   if (!rcSecretKey(appCode)) return { status: 'skipped', reason: 'unconfigured', changed: false };
   try {

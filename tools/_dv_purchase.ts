@@ -17,13 +17,17 @@ import {
   viewOf,
   type Decision,
   type EntState,
+  type EntitlementView,
   type RcEvent,
 } from '../lib/revenuecat.ts';
 import {
   PULL_COOLDOWN_SEC,
   PULL_FRESH_COOLDOWN_SEC,
+  PULL_EXPIRED_COOLDOWN_SEC,
+  PULL_EXPIRED_WINDOW_SEC,
   PULL_RETRY_SEC,
   decideSnapshot,
+  pullCooldownFor,
   pullAllowed,
   pullEventId,
   retryStamp,
@@ -416,6 +420,75 @@ console.log('\n[_dv_purchase] 상태 전이\n');
       'RC 키 없으면 no-op(쿨다운 스탬프도 안 찍는다)',
       r.reason === 'unconfigured' && gate.stamps.size === 0 && fetchFn.count() === 0,
     );
+  }
+}
+
+// ── 7. 만료 직후의 쿨다운 ── 2026-08-19 실결제 검증에서 드러난 창
+//
+// 실측 순서: 14:06:21 결제 → RC가 **90초짜리 만료**를 준다(Play가 확정하기 전) →
+// 14:07:51 만료 → **14:24:19에야 RENEWAL로 한 달이 온다.** 그 17분 동안 결제자는 미구독자였고,
+// 직전 pull이 찍은 6시간 스탬프가 재확인을 막고 있었다. RENEWAL이 유실됐다면 6시간이었다.
+{
+  const now = new Date(at(1));
+  const view = (over: Partial<EntitlementView>): EntitlementView => ({
+    active: false,
+    expiresAt: new Date(now.getTime() - 60_000).toISOString(),
+    willRenew: true,
+    inGracePeriod: false,
+    ...over,
+  });
+
+  check('갱신 예정인데 만료됨 → 짧은 쿨다운', pullCooldownFor([view({})], now) === PULL_EXPIRED_COOLDOWN_SEC);
+  check('한 번도 구독 안 함 → 기본 쿨다운', pullCooldownFor([], now) === PULL_COOLDOWN_SEC);
+  check('해지하고 만료됨 → 기본 쿨다운(답이 바뀔 일이 없다)', pullCooldownFor([view({ willRenew: false })], now) === PULL_COOLDOWN_SEC);
+
+  // 이탈한 옛 구독자가 앱을 열 때마다 10분마다 RC를 때리면 안 된다
+  const churned = view({ expiresAt: new Date(now.getTime() - (PULL_EXPIRED_WINDOW_SEC + 60) * 1000).toISOString() });
+  check('오래 전에 만료된 구독자는 창 밖 → 기본 쿨다운', pullCooldownFor([churned], now) === PULL_COOLDOWN_SEC);
+
+  // 실측 재현: 90초 만료가 지난 직후, 6시간이 아니라 10분 뒤에 다시 물어본다
+  {
+    const clock = { now: new Date(at(1)) };
+    const stamps = new Map<string, Date>();
+    const gate = {
+      async claim(id: string, cooldownSec: number) {
+        if (!pullAllowed(stamps.get(id) ?? null, clock.now, cooldownSec)) return false;
+        stamps.set(id, clock.now);
+        return true;
+      },
+      async release(id: string) {
+        stamps.set(id, retryStamp(clock.now));
+      },
+    };
+    let calls = 0;
+    const fetchFn = async (): Promise<FetchResult> => {
+      calls++;
+      return { status: 'ok', snapshot: {} };
+    };
+    const deps = { gate, fetch: fetchFn, apply: async () => ({ status: 'ignored' }), now: () => clock.now };
+    process.env.RC_SECRET_API_KEY = 'guard-fake-key-not-a-real-secret';
+
+    const lapsed = pullCooldownFor([view({})], clock.now);
+    await runPull(deps, 'jogak', SUB, KEYS, { cooldownSec: lapsed });
+    clock.now = new Date(clock.now.getTime() + PULL_EXPIRED_COOLDOWN_SEC * 1000);
+    await runPull(deps, 'jogak', SUB, KEYS, { cooldownSec: lapsed });
+    check('만료 직후엔 6시간이 아니라 10분 뒤에 재확인한다', calls === 2, `calls=${calls}`);
+    delete process.env.RC_SECRET_API_KEY;
+  }
+
+  // 짧은 만료가 **정상 값일 수 있다**는 것 — 최소 주기 가드를 걸면 안 되는 이유
+  {
+    const short = decideEvent(
+      ev({ type: 'INITIAL_PURCHASE', purchased_at_ms: at(0), event_timestamp_ms: at(0), expiration_at_ms: at(0) + 90_000 }),
+      KEYS,
+    );
+    const s1 = nextState(null, short, new Date(at(0) + 1000))!;
+    check('90초짜리 만료도 그대로 받는다(Play 결제 확정 대기 구간의 실제 값)', s1.expiresAt?.getTime() === at(0) + 90_000);
+
+    // 그리고 확정 후 RENEWAL이 한 달로 밀어준다 — max()라 순서를 안 탄다
+    const renew = decideEvent(ev({ type: 'RENEWAL', event_timestamp_ms: at(0) + 90_000, expiration_at_ms: at(30) }), KEYS);
+    const s2 = nextState(s1, renew, new Date(at(0) + 91_000))!;
+    check('확정 RENEWAL이 만료를 한 달로 정정한다', s2.expiresAt?.getTime() === at(30) && viewOf(s2, new Date(at(1))).active);
   }
 }
 

@@ -23,7 +23,7 @@
 //    쿨다운과 동시성 락을 한 문장에 담고, DB가 죽으면 라우트 자체가 못 도니 그 함정이 없다.
 
 // 확장자를 명시한다 — 이 파일은 Next 번들과 `node tools/_dv_purchase.ts`(타입 스트리핑) 양쪽에서 로드된다.
-import { sandboxGrantEnabled, type Decision } from './revenuecat.ts';
+import { sandboxGrantEnabled, type Decision, type EntitlementView } from './revenuecat.ts';
 
 // ── 튜너블 상수(가드가 직접 읽어 드리프트 차단 — lib/ratelimit.ts의 LIMITS와 같은 이유) ──
 
@@ -39,6 +39,21 @@ export const PULL_FRESH_COOLDOWN_SEC = 60;
 export const PULL_RETRY_SEC = 120;
 
 /**
+ * **막 만료된 구독자**의 쿨다운. 6시간은 유료 사용자에게 너무 길다.
+ *
+ * 2026-08-19 실결제 검증에서 드러났다: Play가 첫 결제를 확정하기 전 RC가 90초짜리 만료를 주고,
+ * 확정 후 RENEWAL로 정정한다. 그 정정이 **17분 뒤에** 왔다. 그동안 사용자는 미구독자였고,
+ * 읽기 경로 pull은 직전 pull이 찍은 6시간 스탬프에 막혀 있었다 —
+ * RENEWAL이 유실됐다면 **결제한 사람이 6시간 잠긴다.**
+ */
+export const PULL_EXPIRED_COOLDOWN_SEC = 600;
+/**
+ * 위 짧은 쿨다운을 적용하는 창(만료 시각 기준). 이 창을 안 두면 **이탈한 옛 구독자**가
+ * 앱을 열 때마다 10분마다 RC를 때린다 — 답이 바뀔 일이 없는데도.
+ */
+export const PULL_EXPIRED_WINDOW_SEC = 86400;
+
+/**
  * 쿨다운 판정. **`pullGate.claim`의 조건부 UPDATE와 같은 규칙**을 순수하게 적은 것이다 —
  * 가드가 DB 없이 이 규칙을 검사한다. 숫자는 위 상수를 SQL이 그대로 받으므로 드리프트하지 않는다
  * (중복되는 것은 비교 연산자 하나뿐이다).
@@ -48,6 +63,23 @@ export const pullAllowed = (stampedAt: Date | null, now: Date, cooldownSec: numb
 
 /** 실패 롤백 후의 스탬프. 가장 긴 쿨다운 기준으로 PULL_RETRY_SEC 뒤에 창이 열린다. */
 export const retryStamp = (now: Date): Date => new Date(now.getTime() - (PULL_COOLDOWN_SEC - PULL_RETRY_SEC) * 1000);
+
+/**
+ * 지금 이 주체에게 맞는 쿨다운. **순수 함수** — 가드가 DB 없이 검사한다.
+ *
+ * 갈림길은 하나다: *"갱신되기로 돼 있는데 만료돼 있는가."* 그렇다면 우리가 이벤트를 놓쳤을
+ * 가능성이 있고, 틀렸을 때의 비용이 **돈 낸 사람이 막히는 것**이라 자주 물어볼 값어치가 있다.
+ * 해지한 사람(`willRenew=false`)과 한 번도 구독 안 한 사람은 답이 바뀔 일이 없으니 6시간이다.
+ */
+export function pullCooldownFor(views: EntitlementView[], now: Date): number {
+  const lapsed = views.some((v) => {
+    if (v.active || !v.willRenew || !v.expiresAt) return false;
+    const exp = Date.parse(v.expiresAt);
+    if (!Number.isFinite(exp) || exp > now.getTime()) return false;
+    return now.getTime() - exp <= PULL_EXPIRED_WINDOW_SEC * 1000; // 이탈자는 창 밖으로 나간다
+  });
+  return lapsed ? PULL_EXPIRED_COOLDOWN_SEC : PULL_COOLDOWN_SEC;
+}
 
 const RC_BASE = 'https://api.revenuecat.com/v1/subscribers';
 const FETCH_TIMEOUT_MS = 5000;
@@ -233,10 +265,11 @@ export async function runPull(
   appCode: string,
   subjectId: string,
   allowedKeys: string[],
-  opts: { fresh?: boolean } = {},
+  opts: { fresh?: boolean; cooldownSec?: number } = {},
 ): Promise<PullResult> {
   const now = deps.now ?? (() => new Date());
-  const cooldown = opts.fresh ? PULL_FRESH_COOLDOWN_SEC : PULL_COOLDOWN_SEC;
+  // fresh(사용자가 요청한 확인)가 가장 짧고, 그 외엔 호출부가 준 값 — 없으면 기본.
+  const cooldown = opts.fresh ? PULL_FRESH_COOLDOWN_SEC : (opts.cooldownSec ?? PULL_COOLDOWN_SEC);
 
   try {
     // 키가 없으면 claim조차 하지 않는다 — 쿨다운을 태워봐야 영원히 할 일이 없다.

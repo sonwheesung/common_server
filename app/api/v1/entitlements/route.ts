@@ -16,6 +16,7 @@
 import { NextResponse } from 'next/server';
 import { requireSubject } from '../../../../lib/auth/subject';
 import { entitlementsOf, pullEntitlements } from '../../../../lib/entitlement';
+import { pullCooldownFor } from '../../../../lib/rcPull';
 import { reportError } from '../../../../lib/observability';
 
 export const dynamic = 'force-dynamic';
@@ -27,11 +28,15 @@ export async function GET(req: Request) {
 
     let entitlements = await entitlementsOf(authed.subject.id);
 
-    if (!Object.values(entitlements).some((e) => e.active)) {
+    const views = Object.values(entitlements);
+    if (!views.some((e) => e.active)) {
       const fresh = new URL(req.url).searchParams.get('fresh') === '1';
+      // 쿨다운은 "우리가 얼마나 틀렸을 수 있나"에 맞춘다 — 갱신 예정인데 만료돼 있으면 10분,
+      // 그 외엔 6시간(`pullCooldownFor`). 하나로 두면 결제한 사람이 6시간 잠기는 창이 생긴다.
+      const cooldownSec = pullCooldownFor(views, new Date());
       // RC 장애는 여기서 삼킨다. 500을 주면 앱은 unreachable로 보고 캐시를 유지하는데,
       // 500이 잦으면 관측이 오염된다 — **pull 실패 = 기존 DB 상태 그대로 200.**
-      const pulled = await pullEntitlements(authed.subject.appCode, authed.subject.id, { fresh });
+      const pulled = await pullEntitlements(authed.subject.appCode, authed.subject.id, { fresh, cooldownSec });
       if (pulled.changed) entitlements = await entitlementsOf(authed.subject.id);
     }
 
