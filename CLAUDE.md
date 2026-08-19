@@ -20,8 +20,10 @@
 - **env는 호출 시점에 읽는다.** 모듈 로드 시 캐시하면 배포 env 변경에 반응하지 못한다.
 - **관리자·크론은 fail-closed.** `ADMIN_TOKEN` 16자 미만이면 관리자 기능 전면 차단. 크론은 배포 환경에서 시크릿 없으면 거부.
 - **레이트리밋은 fail-open.** 그래서 무인증 라우트의 실질 방어선은 **DB 기반 일일 캡**(`apps.ticketDailyCap`)이다.
+  같은 이유로 **RC pull 쿨다운은 Redis가 아니라 Postgres**(`subjects.rc_pulled_at`)에 있다 — fail-open 쿨다운은 인프라가 흔들릴 때 정확히 외부 호출이 터진다.
 - **응답 후 처리는 `afterSafe()`로.** 서버리스 freeze로 알림이 유실되고, 무가드 `after()`는 요청 밖에서 throw한다.
 - **Sentry는 `sentryEnabled()` 한 곳에서만 판단.** `instrumentation.ts`와 `lib/observability.ts`가 공유한다 — 어긋나면 절반만 막혀 로컬 에러가 운영으로 샌다.
+- **엔타이틀먼트의 입력은 둘이다.** RC 웹훅(push) + `GET /subscribers`(pull, `lib/rcPull.ts`). 웹훅은 5회 재시도 후 포기하므로 push만으로는 유실이 영구 손실이 된다.
 - **미등록·비활성 앱은 404.** 400을 주면 "있는 앱인지"를 탐지당한다.
 - **개인정보 최소수집.** 문의에 저장하는 기기정보는 platform·appVersion 뿐. IP는 레이트리밋 키로만 쓰고 버린다.
 
@@ -33,7 +35,7 @@
 | Vercel | `sonws/common-server` (CLI 배포 — GitHub 연동 없음) |
 | Supabase | `common-server` / ref `nhpnvwwhuyvwcmkkhayc` / ap-northeast-2 |
 | 풀러 | `aws-0-ap-northeast-2.pooler.supabase.com` — 런타임 `:6543`(transaction) · 마이그레이션 `:5432`(session) |
-| Vercel env | `DATABASE_URL` · `ADMIN_TOKEN` · `CRON_SECRET` · `DISCORD_TICKET_WEBHOOK_URL_MYWORD` (production만). **Upstash·Sentry는 미설정 = 의도적 no-op** |
+| Vercel env | `DATABASE_URL` · `ADMIN_TOKEN` · `CRON_SECRET` · `DISCORD_TICKET_WEBHOOK_URL_MYWORD` (production만). **Upstash·Sentry·`RC_SECRET_API_KEY_*`는 미설정 = 의도적 no-op** |
 
 env를 바꾸면 **재배포해야 적용된다**(기존 배포는 빌드 시점 환경을 들고 있다). `node tools/_vercel_env.ts && npx vercel --prod --yes`.
 
@@ -70,7 +72,7 @@ app/api/admin/*                  관리자 — Bearer ADMIN_TOKEN
 app/api/cron/purge               보관기간 파기(일 1회)
 app/ops-4b7e21                   관리자 콘솔 (경로는 보안 장치가 아님 — 방어는 ADMIN_TOKEN)
 client/                          앱에 **복사해서** 쓰는 SDK (monorepo 안 씀)
-lib/                             admin·apps·auth·revenuecat·entitlement·notify·ratelimit·retention·observability·afterSafe
+lib/                             admin·apps·auth·revenuecat·rcPull·entitlement·notify·ratelimit·retention·observability·afterSafe
 ```
 
 ## 연동 중인 앱
@@ -87,7 +89,8 @@ lib/                             admin·apps·auth·revenuecat·entitlement·not
 `DISCORD_TICKET_WEBHOOK_URL`)이 없어서 `notify`가 no-op이다. 콘솔을 직접 열어보기 전까지
 문의가 들어온 줄 모른다 — 웹훅을 넣고 재배포해야 알림이 붙는다.
 
-앱 코드는 `apps` 테이블이 allowlist라 재배포 없이 늘어나지만, **알림 채널만은 env라 재배포가 필요하다.**
+앱 코드는 `apps` 테이블이 allowlist라 재배포 없이 늘어나지만, **env로 남은 둘은 재배포가 필요하다** —
+디스코드 알림 채널(`DISCORD_TICKET_WEBHOOK_URL_*`)과 RC pull 키(`RC_SECRET_API_KEY_*`). 둘 다 없으면 조용히 no-op이라 **안 붙은 줄 모른다.**
 
 <!-- BEGIN:nextjs-agent-rules -->
 

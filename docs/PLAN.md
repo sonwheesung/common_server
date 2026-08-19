@@ -328,6 +328,44 @@ couponRedemptions  (appCode, couponId, subjectId)  UNIQUE ← 1회 게이트
   구독은 Play 계정 소유라 앱이 `restorePurchases()`를 부르면 RC가 소유자를 옮긴다. 처리 안 하면
   "돈은 나가는데 pro가 아닌" 상태가 유지된다. RC의 이전은 **공유가 아니라 이동**이다.
 
+#### Phase 9.1 — pull 폴백 (2026-08-19)
+
+**웹훅이 유일한 입력이었다.** RC는 실패 시 5회(5·10·20·40·80분) 재시도하고 **포기한다**. 포기하면
+그 사용자는 영구히 `pro`가 아니고 복구 경로는 사용자가 스스로 "구매 내역 복원"을 누르는 것뿐이다 —
+돈 낸 사람이 그 버튼이 자기 문제의 답인 줄 알 리 없다. RC 공식 권고도 "웹훅을 받으면
+`GET /subscribers`로 다시 당겨 동기화하라"다. 구현: `lib/rcPull.ts`.
+
+두 자리에서 당긴다.
+
+| 자리 | 조건 | 쿨다운 |
+|---|---|---|
+| `GET /api/v1/entitlements` | **활성 엔타이틀먼트가 하나도 없을 때** = 부정 답을 주기 직전 | 6시간 (`?fresh=1`이면 60초) |
+| RC 웹훅 수신 후(`afterSafe`) | 항상 | 60초 |
+
+- **읽기 경로가 미도래를, 웹훅 경로가 유실을 담당한다.** 유실된 EXPIRATION("해지했는데 영원히 pro")은
+  읽기 경로가 못 잡는다 — 활성일 때는 pull하지 않기 때문이다. 그래서 웹훅 후 pull이 따로 필요하다.
+- **상태 전이는 웹훅과 공유한다.** 스냅샷은 이벤트가 아니라 상태라 `decideEvent`를 못 쓴다.
+  입력 파싱만 `decideSnapshot`으로 가르고 `nextState()`는 같은 것을 쓴다 — 두 경로가 각자
+  상태를 계산하면 "웹훅으로는 맞는데 pull로는 틀린" 버그가 생긴다.
+- **`eventAt`은 쓰는 시각이 아니라 RC 요청 발사 시각(t1)이다.** 안 그러면 되감기가 난다:
+  `t1 pull 발사 → t2 웹훅 도착 → t3 pull 응답 반영`에서 t1 데이터가 t2를 덮어쓴다.
+  t1로 찍으면 기존 `lastEventAt` 가드가 알아서 버린다 — **새 가드를 만들지 않았다.**
+- **쿨다운은 Postgres**(`subjects.rc_pulled_at`)다. Upstash는 미설정이고 `checkLimit`은 fail-open이라
+  거기 얹으면 "미설정 = 쿨다운 없음"이 되어 **인프라가 흔들릴 때 정확히 RC 호출이 터진다.**
+  조건부 `UPDATE ... WHERE rc_pulled_at < now() - interval RETURNING`은 쿨다운과 동시성 락을
+  한 문장에 담는다(Redis 카운터는 read-then-write 사이가 벌어져 동시 요청이 둘 다 통과할 수 있다).
+- **실패하면 쿨다운을 되돌린다**(`PULL_RETRY_SEC` = 2분). 스탬프는 claim 때 찍히므로 롤백이 없으면
+  답을 못 받고도 6시간 잠긴다 — 이 작업이 고치려던 상황이 다른 이유로 재현된다.
+  ⚠ "실패"는 네트워크·타임아웃·5xx·인증 실패뿐이다. **200 "구독 없음"은 정상 답**이라 쿨다운을 태운다.
+  아니면 미구독자 전원이 2분마다 RC를 때린다.
+- **감사행 멱등키는 결정적 합성키**(`pull:<subject>:<key>:<exp>:<grace>:<renew>`). 같은 스냅샷을
+  반복 pull해도 UNIQUE가 한 행으로 접으므로 "왜 권한이 바뀌었나"는 남고 테이블은 안 붓는다.
+- **실패는 조용하다.** RC가 죽어도 `/api/v1/entitlements`는 기존 DB 상태로 200을 준다. 500을 주면
+  앱은 unreachable로 보고 캐시를 유지하는데, 500이 잦으면 관측이 오염된다.
+
+env: `RC_SECRET_API_KEY_<APPCODE>` → `RC_SECRET_API_KEY` → **없으면 pull 전면 no-op**(기존 동작 유지).
+앱별 키는 `lib/notify.ts`의 디스코드 웹훅과 같은 규칙이고, 같은 비대칭(**env라서 재배포 필요**)을 진다.
+
 남은 것: 조각 서버용 `/api/internal/entitlements`(서비스 토큰) — 조각 서버가 생길 때.
 
 ### Phase 9 원안 — 광고제거 (RevenueCat)

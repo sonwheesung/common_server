@@ -11,8 +11,9 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../../../../db';
 import { apps } from '../../../../../db/schema';
 import { normalizeAppCode } from '../../../../../lib/apps';
-import { applyEvent } from '../../../../../lib/entitlement';
+import { applyEvent, pullEntitlements } from '../../../../../lib/entitlement';
 import { decideEvent, verifyWebhookAuth, type RcEvent } from '../../../../../lib/revenuecat';
+import { afterSafe } from '../../../../../lib/afterSafe';
 import { reportError } from '../../../../../lib/observability';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +39,19 @@ export async function POST(req: Request, ctx: { params: Promise<{ app: string }>
     const allowed = app.entitlementKeys.split(',');
     const decision = decideEvent(event, allowed);
     const result = await applyEvent(appCode, event, decision);
+
+    // RC 공식 권고 — 웹훅을 받으면 GET /subscribers로 다시 당겨 동기화한다.
+    // 페이로드가 부분적이거나 이 이벤트 전에 놓친 것이 있어도 여기서 메워진다.
+    // 특히 **유실된 EXPIRATION**("해지했는데 영원히 pro")은 읽기 경로가 못 잡는다 —
+    // 그쪽은 활성일 때 pull하지 않기 때문이다. 이 자리가 그걸 담당한다.
+    //
+    // afterSafe로 미룬다: RC는 응답이 늦으면 재전송한다. 동기화 실패로 이미 성공한 적용을 되돌릴 이유가 없다.
+    if (decision.subjectId) {
+      const subjectId = decision.subjectId;
+      afterSafe(async () => {
+        await pullEntitlements(appCode, subjectId, { fresh: true }); // 짧은 쿨다운 — 아니면 웹훅마다 걸러진다
+      });
+    }
 
     // 전부 200이다. 어떻게 처리됐는지는 body와 감사행(purchase_events)에 남는다.
     return NextResponse.json({ ok: true, outcome: result.status, reason: 'reason' in result ? result.reason : undefined });

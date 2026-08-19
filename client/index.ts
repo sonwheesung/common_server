@@ -19,7 +19,7 @@ import type {
 export type * from './types';
 
 /** 앱에 복사할 때 이 값을 복사본 주석에 남긴다 — 서버 계약이 바뀌었는지 판단하는 유일한 단서다. */
-export const SDK_VERSION = '2026-08-14'; // +registerDevice (기기 subject — 비회원 앱 문의 귀속)
+export const SDK_VERSION = '2026-08-19'; // +fetchEntitlements({fresh}) (RC pull 폴백 — 웹훅 유실 복구)
 
 const DEFAULT_TIMEOUT_MS = 10000;
 /** 서버가 요구하는 문의 최소 길이(라우트의 CONTENT_MIN과 같은 값). */
@@ -287,12 +287,19 @@ export function createCommonServer(cfg: CommonServerConfig) {
      * ⚠ 로그인했는데 active가 false라면 스토어에 구독이 남아 있을 수 있다(탈퇴 후 재가입 등으로
      *   subject가 바뀐 경우). 그때 `Purchases.restorePurchases()`를 부르면 RC가 소유자를 옮기고
      *   서버에 TRANSFER 웹훅이 온다. 안 부르면 "돈은 나가는데 pro가 아닌" 상태가 유지된다.
+     *
+     * `fresh`는 **구매 성공 직후·구매 내역 복원**에서만 켠다. 활성 구독이 없을 때 서버가 RevenueCat에
+     * 직접 물어보는 쿨다운을 6시간 → 60초로 줄인다(웹훅이 늦거나 유실돼도 그 자리에서 붙는다).
+     * ⚠ **포그라운드 복귀·주기 갱신에는 켜지 마라.** 쿨다운의 존재 이유가 사라져 서버가 RC를 계속 때린다.
+     * 서버가 이 파라미터를 모르는 배포여도 그냥 무시되므로, 배포 순서를 맞출 필요는 없다.
      */
-    async fetchEntitlements(): Promise<Result<{ entitlements: Record<string, EntitlementView>; checkedAt: string }>> {
+    async fetchEntitlements(
+      opts: { fresh?: boolean } = {},
+    ): Promise<Result<{ entitlements: Record<string, EntitlementView>; checkedAt: string }>> {
       if (!baseUrl) return { ok: false, reason: 'not-configured' };
       if (!(await loadToken())) return { ok: false, reason: 'not-signed-in' };
 
-      const res = await req('/api/v1/entitlements', undefined, true);
+      const res = await req(`/api/v1/entitlements${opts.fresh ? '?fresh=1' : ''}`, undefined, true);
       if (!res) return { ok: false, reason: 'offline' };
       if (res.status === 401) {
         await setSession(null, null);

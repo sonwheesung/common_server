@@ -255,6 +255,19 @@ Play 콘솔 상품 등록  →  RC 프로젝트/엔타이틀먼트  →  우리 
 
 **확인** — RC 대시보드에서 테스트 이벤트 전송 → 콘솔 **웹훅 이력**에 `무시 / test-event`로 뜬다. 뜨면 인증이 통한 것이다.
 
+3. **RC secret API key** → Vercel env `RC_SECRET_API_KEY_<APP_CODE 대문자>` (예: `RC_SECRET_API_KEY_JOGAK`)
+
+이건 웹훅과 **반대 방향**이다. 웹훅은 RC가 우리를 부르고, 이 키는 우리가 RC에 물어본다.
+웹훅은 5회 재시도 후 **포기**하므로, 이 키가 없으면 유실된 사용자는 영구히 `pro`가 아니다(`docs/PLAN.md` Phase 9.1).
+
+```bash
+node tools/_vercel_env.ts && npx vercel --prod --yes    # env는 재배포해야 적용된다
+```
+
+⚠ 이건 **그 RC 프로젝트의 모든 구독자를 읽을 수 있는 시크릿**이다. 웹훅 시크릿과 달리 DB가 아니라 env에 있고,
+따라서 **앱을 늘릴 때마다 재배포가 필요하다**(디스코드 웹훅과 같은 비대칭).
+키가 없어도 서버는 깨지지 않는다 — pull이 통째로 no-op일 뿐이다.
+
 ### 7-3. 앱 쪽
 
 🔴 **`Purchases.logIn(subject_id)`를 결제 화면 열기 전에 반드시 호출한다.**
@@ -273,11 +286,16 @@ if (r.ok) await Purchases.logIn(r.subject.id);   // ← 이거
 ```ts
 const r = await server.fetchEntitlements();
 const pro = r.ok && r.entitlements.pro?.active;
+
+// 구매 성공 직후 · 구매 내역 복원 — 이 두 곳에서만
+const r2 = await server.fetchEntitlements({ fresh: true });
 ```
 
 - **`active`만 캐시하지 마라.** `expiresAt`을 같이 저장하고 그때까지만 유효로 봐야 한다. 안 그러면 만료 후에도 영원히 pro다
 - 유예 중(`inGracePeriod`)이면 `expiresAt`이 유예 종료 시각으로 온다. 그 전에 광고를 켜면 안 된다
 - 미구독자도 **200에 빈 객체**다. 404가 아니다 — 서버 오류와 미구독이 구분돼야 광고 여부를 판단할 수 있다
+- 활성 구독이 없으면 서버가 RC에 직접 물어본다(쿨다운 6시간). `fresh: true`면 60초로 줄어든다 —
+  **결제 직후와 복원 버튼에서만 켜라.** 포그라운드 복귀·주기 갱신에 켜면 쿨다운의 존재 이유가 사라진다
 
 ### 7-5. 탈퇴 + 구독의 함정 🔴
 
@@ -310,6 +328,8 @@ BASE_URL=https://common-server.vercel.app node tools/_dv_purchase.ts   # + 라�
 | 결제는 됐는데 권한이 없음 | `Purchases.logIn` 누락 | 콘솔 웹훅 이력 `anonymous-app-user-id` |
 | 결제는 됐는데 `entitlement_ids`가 빔 | RC에서 상품을 엔타이틀먼트에 **attach 안 함** | 콘솔 웹훅 이력 `no-entitlement-ids` |
 | 테스트 결제가 권한을 안 줌 | 라이선스 테스터 결제도 SANDBOX로 온다 | `RC_SANDBOX_GRANT=all` (출시 전 끌 것) |
+| 결제 후 한참 지나도 권한이 안 붙음 | 웹훅 유실 + `RC_SECRET_API_KEY_*` 없어서 pull이 no-op | 7-2 3번. 키를 넣고 **재배포** |
+| 해지했는데 계속 `pro` | 유실된 EXPIRATION. 웹훅 후 pull이 다음 이벤트에서 고친다 | 콘솔 웹훅 이력에 `PULL` 행이 있는지 |
 | 재가입 후 구독이 사라짐 | `subject_id`가 바뀜 | `restorePurchases()` 호출 |
 
 **공통 규칙: 우리 서버가 실패 사유를 뭉개는 건 의도다.** 로그인·웹훅 실패는 전부 같은 401을 준다(설정 탐색 방지). **진단은 관리자 콘솔에서 한다** — 웹훅은 이력에 사유가 남고, 로그인은 audience 설정을 눈으로 보면 된다.

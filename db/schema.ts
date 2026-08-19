@@ -120,6 +120,10 @@ export const subjects = pgTable(
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     // 탈퇴 소프트삭제. 지울 때 provider_id를 가명화(tombstone)해 **재로그인으로 부활하지 않게** 한다.
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // RevenueCat pull 쿨다운 스탬프(lib/rcPull.ts). 조건부 UPDATE의 대상이라 **쿨다운이자 락**이다.
+    // Redis가 아니라 여기 있는 이유: 이 저장소의 Upstash는 미설정이고 리미터는 fail-open이라,
+    // 거기 얹으면 "미설정 = 쿨다운 없음"이 되어 인프라가 흔들릴 때 RC 호출이 터진다.
+    rcPulledAt: timestamp('rc_pulled_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('subjects_app_provider_uniq').on(t.appCode, t.provider, t.providerId),

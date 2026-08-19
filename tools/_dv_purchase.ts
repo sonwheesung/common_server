@@ -7,6 +7,7 @@
 //   1) 도착 순서가 뒤바뀌어도 같은 상태로 수렴한다(갱신 계열 max())
 //   2) 한 기간분만 환불되고 구독이 살아 있으면 다음 갱신에서 자동으로 풀린다(회수를 거래에 묶음)
 //   3) 열리면 안 되는 것이 닫혀 있다(무인증·익명·미등록 키)
+//   4) 웹훅이 유실돼도 pull이 건지고, RC가 죽어도 응답은 살아 있다(lib/rcPull.ts)
 export {};
 
 import {
@@ -18,6 +19,19 @@ import {
   type EntState,
   type RcEvent,
 } from '../lib/revenuecat.ts';
+import {
+  PULL_COOLDOWN_SEC,
+  PULL_FRESH_COOLDOWN_SEC,
+  PULL_RETRY_SEC,
+  decideSnapshot,
+  pullAllowed,
+  pullEventId,
+  retryStamp,
+  runPull,
+  type FetchResult,
+  type PullGate,
+  type RcSnapshot,
+} from '../lib/rcPull.ts';
 
 const BASE = (process.env.BASE_URL ?? '').replace(/\/$/, '');
 const KEYS = ['pro'];
@@ -199,6 +213,210 @@ console.log('\n[_dv_purchase] 상태 전이\n');
 // ── 5. 미구독자 ──
 {
   check('상태 없음 = 비활성', viewOf(EMPTY_STATE).active === false);
+}
+
+// ── 6. pull 폴백 ── 웹훅이 유일한 입력이던 구멍을 메우는 경로(lib/rcPull.ts)
+//
+// I/O(RC 호출·쿨다운 스탬프)를 전부 주입해 **DB 없이** 검사한다.
+// 조각의 교훈은 "순수 계층이 문제"가 아니라 **I/O 경계가 순수하지 않았던 것**이 문제라는 쪽이다.
+{
+  const PULL_APP = 'jogak';
+  const clock = { now: new Date(at(1)) };
+
+  /** subjects.rc_pulled_at 을 메모리로 흉내낸다. 규칙은 pullAllowed/retryStamp를 그대로 쓴다. */
+  function memGate(): PullGate & { stamps: Map<string, Date> } {
+    const stamps = new Map<string, Date>();
+    return {
+      stamps,
+      async claim(subjectId: string, cooldownSec: number) {
+        if (!pullAllowed(stamps.get(subjectId) ?? null, clock.now, cooldownSec)) return false;
+        stamps.set(subjectId, clock.now);
+        return true;
+      },
+      async release(subjectId: string) {
+        stamps.set(subjectId, retryStamp(clock.now));
+      },
+    };
+  }
+
+  /** applyPull의 순수 대역 — nextState로 접어 상태를 만든다(트랜잭션·감사행은 DB의 몫). */
+  function memApply(store: { state: EntState | null }) {
+    return async (_app: string, _sub: string, d: Decision) => {
+      if (d.outcome !== 'applied') return { status: 'ignored' };
+      const n = nextState(store.state, d, clock.now);
+      if (!n) return { status: 'ignored' };
+      store.state = n;
+      return { status: 'applied' };
+    };
+  }
+
+  const activeSnap = (over: Partial<RcSnapshot> = {}): RcSnapshot => ({
+    entitlements: { pro: { expires_date: new Date(at(30)).toISOString(), product_identifier: 'jogak_pro_monthly' } },
+    subscriptions: { jogak_pro_monthly: { expires_date: new Date(at(30)).toISOString(), store_transaction_id: 'GPA.9999' } },
+    ...over,
+  });
+
+  const okFetch = (snap: RcSnapshot) => {
+    let calls = 0;
+    const fn = async (): Promise<FetchResult> => {
+      calls++;
+      return { status: 'ok', snapshot: snap };
+    };
+    return Object.assign(fn, { count: () => calls });
+  };
+
+  process.env.RC_SECRET_API_KEY = 'guard-fake-key-not-a-real-secret';
+
+  // (1) 웹훅이 **한 번도 안 온** subject — pull이 권한을 붙인다. 이 작업의 존재 이유다.
+  {
+    const store = { state: null as EntState | null };
+    const gate = memGate();
+    const fetchFn = okFetch(activeSnap());
+    const r = await runPull({ gate, fetch: fetchFn, apply: memApply(store) }, PULL_APP, SUB, KEYS);
+    check(
+      '웹훅 미도래 subject도 pull이 pro를 붙인다',
+      r.status === 'applied' && !!store.state && viewOf(store.state, clock.now).active,
+    );
+  }
+
+  // (2) 쿨다운 — RC 호출 횟수를 직접 센다
+  {
+    const store = { state: null as EntState | null };
+    const gate = memGate();
+    const fetchFn = okFetch(activeSnap());
+    const deps = { gate, fetch: fetchFn, apply: memApply(store) };
+    await runPull(deps, PULL_APP, SUB, KEYS);
+    const second = await runPull(deps, PULL_APP, SUB, KEYS);
+    check('쿨다운 안에서는 RC를 부르지 않는다', fetchFn.count() === 1 && second.reason === 'cooldown', `calls=${fetchFn.count()}`);
+
+    clock.now = new Date(clock.now.getTime() + PULL_COOLDOWN_SEC * 1000);
+    await runPull(deps, PULL_APP, SUB, KEYS);
+    check('쿨다운이 지나면 다시 부른다', fetchFn.count() === 2, `calls=${fetchFn.count()}`);
+    clock.now = new Date(at(1));
+  }
+
+  // (3) fresh는 짧은 쿨다운을 쓴다 — 결제 직후 8회 백오프가 pull 2~3회로 수렴해야 한다
+  {
+    const store = { state: null as EntState | null };
+    const gate = memGate();
+    const fetchFn = okFetch(activeSnap());
+    const deps = { gate, fetch: fetchFn, apply: memApply(store) };
+    await runPull(deps, PULL_APP, SUB, KEYS, { fresh: true });
+    clock.now = new Date(clock.now.getTime() + PULL_FRESH_COOLDOWN_SEC * 1000);
+    await runPull(deps, PULL_APP, SUB, KEYS, { fresh: true });
+    const blocked = await runPull(deps, PULL_APP, SUB, KEYS); // 같은 시각의 일반 경로는 여전히 잠겨 있다
+    check(
+      'fresh는 60초 쿨다운, 일반 경로는 그대로 잠긴다',
+      fetchFn.count() === 2 && blocked.reason === 'cooldown',
+      `calls=${fetchFn.count()}`,
+    );
+    clock.now = new Date(at(1));
+  }
+
+  // (4) RC 장애 — 기존 상태를 건드리지 않고, 호출부가 500을 만들 재료를 주지 않는다
+  {
+    const before = nextState(null, decideEvent(ev(), KEYS), clock.now)!;
+    const store = { state: before as EntState | null };
+    const gate = memGate();
+    const r = await runPull(
+      { gate, fetch: async () => ({ status: 'failed', reason: 'http-503' }), apply: memApply(store) },
+      PULL_APP,
+      SUB,
+      KEYS,
+    );
+    check('RC 장애 시 실패를 알리되 던지지 않는다', r.status === 'failed' && r.changed === false);
+    check('RC 장애 시 기존 엔타이틀먼트가 그대로다', store.state === before);
+  }
+
+  // (5) pull 실패 후 **재시도 창이 열린다** — 롤백이 없으면 답을 못 받고도 6시간 잠긴다
+  {
+    const store = { state: null as EntState | null };
+    const gate = memGate();
+    let calls = 0;
+    const flaky = async (): Promise<FetchResult> => {
+      calls++;
+      return calls === 1 ? { status: 'failed', reason: 'AbortError' } : { status: 'ok', snapshot: activeSnap() };
+    };
+    const deps = { gate, fetch: flaky, apply: memApply(store) };
+    await runPull(deps, PULL_APP, SUB, KEYS);
+
+    clock.now = new Date(clock.now.getTime() + (PULL_RETRY_SEC - 1) * 1000);
+    const tooEarly = await runPull(deps, PULL_APP, SUB, KEYS);
+    check('실패 직후 재시도 창이 열리기 전엔 잠겨 있다', tooEarly.reason === 'cooldown' && calls === 1);
+
+    clock.now = new Date(clock.now.getTime() + 2000);
+    const retried = await runPull(deps, PULL_APP, SUB, KEYS);
+    check('실패 후 PULL_RETRY_SEC 뒤에 재시도가 열린다', retried.status === 'applied' && calls === 2, `calls=${calls}`);
+    clock.now = new Date(at(1));
+  }
+
+  // (6) 200 "구독 없음"은 **실패가 아니다** — 실패로 세면 미구독자 전원이 2분마다 RC를 때린다
+  {
+    const store = { state: null as EntState | null };
+    const gate = memGate();
+    const fetchFn = okFetch({});
+    const deps = { gate, fetch: fetchFn, apply: memApply(store) };
+    await runPull(deps, PULL_APP, SUB, KEYS);
+    clock.now = new Date(clock.now.getTime() + PULL_RETRY_SEC * 1000 + 1000);
+    await runPull(deps, PULL_APP, SUB, KEYS);
+    check('200 "구독 없음"은 쿨다운을 태운다(재시도 창을 열지 않는다)', fetchFn.count() === 1, `calls=${fetchFn.count()}`);
+    clock.now = new Date(at(1));
+  }
+
+  // (7) pull과 웹훅이 **동시에** 도착해도 같은 곳으로 수렴한다
+  {
+    const t1 = new Date(at(1)); // pull 발사 시각
+    const wh = ev({ type: 'RENEWAL', event_timestamp_ms: at(2), expiration_at_ms: at(60) }); // 더 새 정보
+    const pull = decideSnapshot(activeSnap(), KEYS, SUB, t1)[0]; // t1 시점 정보(만료 at(30))
+    const whD = decideEvent(wh, KEYS);
+
+    const a = nextState(nextState(null, pull, clock.now), whD, clock.now)!; // pull → 웹훅
+    const b = nextState(nextState(null, whD, clock.now), pull, clock.now); // 웹훅 → pull(늦게 반영)
+    check(
+      'pull·웹훅 동시 도착 — 순서를 바꿔도 같은 만료로 수렴',
+      a.expiresAt?.getTime() === at(60) && (b === null || b.expiresAt?.getTime() === at(60)),
+      `a=${a.expiresAt?.toISOString()} b=${b?.expiresAt?.toISOString() ?? 'null'}`,
+    );
+    check('늦게 반영된 pull이 최신 웹훅을 되감지 않는다', b === null || b.expiresAt!.getTime() >= at(60));
+  }
+
+  // (8) 유실된 EXPIRATION 복구 — 스냅샷에 키가 없으면 만료로 적는다("해지했는데 영원히 pro")
+  {
+    const alive = nextState(null, decideEvent(ev({ expiration_at_ms: at(60) }), KEYS), clock.now)!;
+    const d = decideSnapshot({}, KEYS, SUB, new Date(at(5)))[0];
+    const after = nextState(alive, d, new Date(at(5)))!;
+    check('스냅샷에 키가 없으면 만료로 내려온다(유실 EXPIRATION 복구)', !viewOf(after, new Date(at(5))).active);
+  }
+
+  // (9) SANDBOX 판정이 웹훅과 같다 — 여기만 다르면 두 경로가 갈린다
+  {
+    const snap = activeSnap({
+      subscriptions: { jogak_pro_monthly: { is_sandbox: true, expires_date: new Date(at(30)).toISOString() } },
+    });
+    const d = decideSnapshot(snap, KEYS, SUB, clock.now)[0];
+    check('pull도 SANDBOX는 스위치 없으면 무시', d.outcome === 'ignored' && d.reason === 'sandbox');
+  }
+
+  // (10) 감사행 멱등키가 결정적이다 — 같은 스냅샷을 반복 pull해도 행이 안 쌓인다
+  {
+    const a = pullEventId(SUB, decideSnapshot(activeSnap(), KEYS, SUB, new Date(at(1)))[0]);
+    const b = pullEventId(SUB, decideSnapshot(activeSnap(), KEYS, SUB, new Date(at(3)))[0]);
+    const c = pullEventId(SUB, decideSnapshot({}, KEYS, SUB, new Date(at(1)))[0]);
+    check('같은 스냅샷 = 같은 멱등키(요청 시각이 달라도)', a === b);
+    check('상태가 다르면 다른 멱등키', a !== c);
+  }
+
+  // (11) 키가 없는 배포는 쿨다운조차 태우지 않는다 — 나중에 키를 넣으면 즉시 동작해야 한다
+  {
+    delete process.env.RC_SECRET_API_KEY;
+    const gate = memGate();
+    const fetchFn = okFetch(activeSnap());
+    const r = await runPull({ gate, fetch: fetchFn, apply: memApply({ state: null }) }, PULL_APP, SUB, KEYS);
+    check(
+      'RC 키 없으면 no-op(쿨다운 스탬프도 안 찍는다)',
+      r.reason === 'unconfigured' && gate.stamps.size === 0 && fetchFn.count() === 0,
+    );
+  }
 }
 
 // ── 라우트(선택) ──
