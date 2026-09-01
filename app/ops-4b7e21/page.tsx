@@ -4,7 +4,7 @@
 //
 // ⚠ 경로의 무작위 문자열은 **보안 장치가 아니다**. 실제 방어는 서버의 ADMIN_TOKEN fail-closed 검증이고,
 //   경로는 크롤링·우연한 방문을 줄이는 부수 조치일 뿐이다.
-// 토큰은 sessionStorage에만, 그것도 **서버에서 통한 뒤에만** 저장한다 — 탭을 닫으면 사라진다.
+// 토큰은 **서버에서 통한 뒤에만** 저장하고, localStorage에 30일 슬라이딩으로 둔다(↓ TOKEN_KEY 주석).
 //
 // 배구 콘솔과 다른 점: 저쪽은 PROJ_CODE 고정이라 앱 개념이 없지만 여기는 **1배포 N앱**이다.
 // 그래서 앱 선택이 사이드바 최상단 일급 요소이고, URL에도 앱이 들어간다(?app=&tab=).
@@ -147,7 +147,58 @@ type Tab = 'overview' | 'anns' | 'tickets' | 'subjects' | 'billing' | 'errors' |
 // 이식할 때마다 grep 노동이 반복됐다. 이식 = BRAND 교체 + globals.css 토큰 교체 + NAV 교체.
 const BRAND = { icon: Server, console: '관리자 콘솔', product: '공통 서버' };
 
+// ── 관리자 토큰 보관 ──────────────────────────────────────────────────────────────
+// 종전엔 sessionStorage였다 — 탭을 닫을 때마다 다시 붙여넣어야 했다(2026-09-01 사용자).
+// 배구 콘솔은 localStorage에 **무기한**으로 둔다. 여긴 거기서 만료만 더한다 —
+// 쓰는 동안에는 안 끊기고(열 때마다 연장), 방치한 노트북에선 결국 만료된다.
+//
+// ⚠ 대가는 분명하다: 토큰이 **디스크에 남고 브라우저 재시작을 견딘다.**
+//   이 화면에 HTML 주입 싱크가 없어서(React가 전부 이스케이프, dangerouslySetInnerHTML 없음)
+//   허용했을 뿐, 공용 PC에선 로그아웃을 누르는 게 아니라 **필수**다.
 const TOKEN_KEY = 'cs_admin_token';
+/** 슬라이딩 만료(일). 짧다고 느끼면 여기 한 줄만 고친다. */
+const TOKEN_TTL_DAYS = 30;
+
+/** 저장된 토큰 — 만료됐거나 깨졌으면 지우고 빈 문자열. */
+function readToken(): string {
+  try {
+    // 구판(sessionStorage) 잔존값도 한 번은 받아준다 — 이번 탭에선 다시 안 물어보게.
+    const legacy = sessionStorage.getItem(TOKEN_KEY);
+    if (legacy) {
+      sessionStorage.removeItem(TOKEN_KEY);
+      saveToken(legacy);
+      return legacy;
+    }
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return '';
+    const v = JSON.parse(raw) as { t?: string; exp?: number };
+    if (!v.t || typeof v.exp !== 'number' || v.exp < Date.now()) {
+      localStorage.removeItem(TOKEN_KEY);
+      return '';
+    }
+    return v.t;
+  } catch {
+    return ''; // 저장소가 막혔거나(사생 모드) 값이 깨졌다 — 로그인 화면으로 보내면 된다
+  }
+}
+
+/** 토큰 저장 + 만료 연장. **서버에서 통한 뒤에만** 부른다. */
+function saveToken(t: string) {
+  try {
+    localStorage.setItem(TOKEN_KEY, JSON.stringify({ t, exp: Date.now() + TOKEN_TTL_DAYS * 86400_000 }));
+  } catch {
+    /* 저장 실패해도 이번 탭은 메모리 토큰으로 그대로 돌아간다 */
+  }
+}
+
+function clearToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* 무시 */
+  }
+}
 const CATEGORY_KO: Record<string, string> = { bug: '버그', suggestion: '건의', question: '질문', etc: '기타' };
 const KIND_KO: Record<string, string> = { notice: '공지', event: '이벤트', update: '업데이트' };
 
@@ -568,7 +619,7 @@ export default function Ops() {
   }, []);
 
   useEffect(() => {
-    setToken(sessionStorage.getItem(TOKEN_KEY) ?? '');
+    setToken(readToken());
     setDark(document.documentElement.dataset.theme === 'dark');
     const s = urlState();
     setTab(s.tab);
@@ -612,7 +663,7 @@ export default function Ops() {
         throw new Error(reasonKo('network', 0));
       }
       if (res.status === 401) {
-        sessionStorage.removeItem(TOKEN_KEY);
+        clearToken();
         setToken('');
         setVerified(false);
         throw new Error(reasonKo('unauthorized', 401));
@@ -634,7 +685,7 @@ export default function Ops() {
       setApps(j.apps);
       setAppCode((prev) => (prev && j.apps.some((a: App) => a.appCode === prev) ? prev : (j.apps[0]?.appCode ?? '')));
       setErr('');
-      sessionStorage.setItem(TOKEN_KEY, token); // 통한 토큰만 저장한다
+      saveToken(token); // 통한 토큰만 저장하고, 열 때마다 만료를 연장한다
       setVerified(true);
     } catch (e) {
       setErr(String((e as Error).message));
@@ -740,7 +791,12 @@ export default function Ops() {
               <AlertTriangle className="size-4 shrink-0" /> {err}
             </p>
           )}
-          <p className="mt-6 text-center text-xs text-fg-muted">이 탭에서만 유지됩니다 · 닫으면 사라집니다</p>
+          {/* 디스크에 남는다는 걸 숨기지 않는다 — 공용 PC에선 로그아웃이 필수가 된다는 뜻이다 */}
+          <p className="mt-6 text-center text-xs leading-relaxed text-fg-muted">
+            이 브라우저에 {TOKEN_TTL_DAYS}일 유지됩니다(열 때마다 연장)
+            <br />
+            공용 PC라면 끝날 때 로그아웃하세요
+          </p>
         </div>
       </main>
     );
@@ -844,7 +900,7 @@ export default function Ops() {
             variant="ghost"
             className="flex-1 justify-start"
             onClick={() => {
-              sessionStorage.removeItem(TOKEN_KEY);
+              clearToken();
               setToken('');
               setVerified(false);
             }}
