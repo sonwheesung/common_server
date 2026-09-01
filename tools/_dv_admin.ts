@@ -124,6 +124,15 @@ if (TOKEN) {
 
     // 판정을 했다는 사실 자체를 내려보내야 화면이 "정상"과 "안 봤음"을 구분한다.
     check('stats alertChecks 비지 않음', (s.alertChecks ?? []).length > 0, JSON.stringify(s.alertChecks));
+    // 최근 접속자는 전체 사용자의 부분집합이다. 넘으면 창 계산이나 필터가 틀린 것.
+    // ⚠ DAU와는 비교하지 않는다 — KST 자정 직후엔 "30분 내 접속"이 어제 날짜에 속할 수 있어
+    //   online ≤ dau가 정당하게 깨진다(그런 단언은 하필 새벽에만 터진다).
+    check(
+      'stats subjectsOnline ≤ subjects',
+      (s.kpi?.subjectsOnline ?? 0) <= (s.kpi?.subjects ?? 0),
+      `${s.kpi?.subjectsOnline} / ${s.kpi?.subjects}`,
+    );
+    check('stats onlineWindowMin 양수', (s.kpi?.onlineWindowMin ?? 0) > 0, String(s.kpi?.onlineWindowMin));
     // ⚠ infraEnv는 **env 이름**이지 값이 아니다. URL이 섮이면 그 순간 콘솔로 웹훅 시크릿이 새는 것이다.
     check(
       'stats infraEnv는 이름뿐 (값 미유출)',

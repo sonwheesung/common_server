@@ -29,6 +29,7 @@ import {
   Lock,
   LogOut,
   Megaphone,
+  Radio,
   Menu,
   MessageSquare,
   Moon,
@@ -101,6 +102,8 @@ type Stats = {
   kpi: {
     subjects: number;
     subjectsActive: number;
+    subjectsOnline: number;
+    onlineWindowMin: number;
     subjectsNew24h: number;
     subscribers: number;
     tickets: number;
@@ -1325,7 +1328,15 @@ function Overview({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat icon={Megaphone} label="노출 중 공지" value={live} sub={`전체 ${anns.length}건`} />
+        {/* "지금 몇 명 있나" — DAU와 다른 것을 잰다(DAU는 오늘 하루 누구든, 이건 지금 이 순간).
+            lastSeenAt이 매 부팅 갱신되기 때문에 성립한다. 공지 건수는 공지 탭이 그대로 들고 있다. */}
+        <Stat
+          icon={Radio}
+          label="최근 접속자"
+          value={kpi ? kpi.subjectsOnline.toLocaleString() : '—'}
+          sub={kpi ? `최근 ${kpi.onlineWindowMin}분 · 노출 중 공지 ${live}건` : undefined}
+          tone={kpi?.subjectsOnline ? 'ok' : 'muted'}
+        />
         <Stat
           icon={Wrench}
           label="서비스 상태"

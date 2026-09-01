@@ -24,24 +24,25 @@ import {
 export * from './activityMath';
 
 /**
- * 활성 기록 — 하트비트에서 부른다. 하루 두 번째부터는 무동작(PK 충돌 → DO NOTHING)이라 멱등이다.
- * 그래서 하트비트 지점이 여러 곳이어도(bootstrap·devices·login) 중복 계상되지 않는다.
+ * 활성 기록 — 하트비트에서 부른다. 날짜 행은 PK 충돌 → DO NOTHING이라 멱등이고,
+ * 그래서 하트비트 지점이 여러 곳이어도(bootstrap·devices·login) 하루 1행만 남는다.
  *
- * **새 행이 실제로 들어갔을 때만** `lastSeenAt`을 갱신한다 — 쓰기가 1일 1회로 묶여서
- * 부팅마다 UPDATE가 나가지 않는다.
+ * **`lastSeenAt`은 매번 갱신한다.** 처음엔 "새 행이 들어갔을 때만" 갱신해 쓰기를 1일 1회로
+ * 묶었는데, 그러면 lastSeenAt이 **그날의 첫 접속 시각**에 고정돼 하루 안의 해상도가 사라진다.
+ * "지금 몇 명 있나"(최근 30분)나 시간대별 분포 같은 지표가 그 순간 만들 수 없게 된다 —
+ * 하루에 한 번 쓰나 열 번 쓰나 단일 행 PK UPDATE라 아낀 값이 잃은 것보다 작았다(2026-09-01 정정).
+ *
+ * 두 사실은 **역할이 다르다**: `subject_active_day`는 "어느 날에 활성이었나"(덮어써지지 않는 과거),
+ * `lastSeenAt`은 "마지막으로 언제 봤나"(지금 이 순간). 둘 다 있어야 DAU와 실시간을 같이 말한다.
  *
  * **실패는 삼킨다.** 관측이 본 기능(부팅·로그인)을 막으면 안 된다.
  */
 export async function recordActive(appCode: string, subjectId: string, now: Date = new Date()): Promise<void> {
   try {
-    const inserted = await db
-      .insert(subjectActiveDay)
-      .values({ appCode, subjectId, day: kstYmd(now) })
-      .onConflictDoNothing()
-      .returning({ day: subjectActiveDay.day });
-    if (inserted.length) {
-      await db.update(subjects).set({ lastSeenAt: now }).where(eq(subjects.id, subjectId));
-    }
+    await Promise.all([
+      db.insert(subjectActiveDay).values({ appCode, subjectId, day: kstYmd(now) }).onConflictDoNothing(),
+      db.update(subjects).set({ lastSeenAt: now }).where(eq(subjects.id, subjectId)),
+    ]);
   } catch {
     /* 관측 실패는 무시 */
   }

@@ -21,6 +21,8 @@ import { reportError } from '../../../../lib/observability';
 export const dynamic = 'force-dynamic';
 
 const ACTIVE_DAYS = 14;
+/** "지금 쓰고 있는 사람" 창(분). 30분 — 세션 하나를 넉넉히 덮으면서 어제 사람이 섞이지 않는 길이. */
+const ONLINE_WINDOW_MIN = 30;
 const STALE_WARN_H = 48; // 미처리 문의 방치 경고
 const STALE_CRIT_H = 72;
 const ERROR_LIMIT = 30;
@@ -59,14 +61,21 @@ export async function GET(req: Request) {
     const now = Date.now();
     const day = new Date(now - 86400_000);
     const activeCutoff = new Date(now - ACTIVE_DAYS * 86400_000);
+    const onlineCutoff = new Date(now - ONLINE_WINDOW_MIN * 60_000);
 
-    const [subjTotal, subjActive, subjNew, tkTotal, tkPending, tk24, oldest, subs, byReason, recent, errToday, setting, activity] =
+    const [subjTotal, subjActive, subjOnline, subjNew, tkTotal, tkPending, tk24, oldest, subs, byReason, recent, errToday, setting, activity] =
       await Promise.all([
         db.select({ n: count() }).from(subjects).where(eq(subjects.appCode, appCode)),
         db
           .select({ n: count() })
           .from(subjects)
           .where(and(eq(subjects.appCode, appCode), isNull(subjects.deletedAt), gte(subjects.lastSeenAt, activeCutoff))),
+        // "지금 쓰고 있는 사람" — lastSeenAt이 매 부팅 갱신되므로 이 창이 의미를 갖는다.
+        // DAU와 다른 것을 잰다: DAU는 오늘 하루 누구든, 이건 지금 이 순간.
+        db
+          .select({ n: count() })
+          .from(subjects)
+          .where(and(eq(subjects.appCode, appCode), isNull(subjects.deletedAt), gte(subjects.lastSeenAt, onlineCutoff))),
         db.select({ n: count() }).from(subjects).where(and(eq(subjects.appCode, appCode), gte(subjects.createdAt, day))),
         db.select({ n: count() }).from(tickets).where(eq(tickets.appCode, appCode)),
         db
@@ -238,6 +247,8 @@ export async function GET(req: Request) {
         //   사실상 "최근 14일 신규 설치"였다. 하트비트가 붙은 뒤에야 제 뜻을 갖는다 —
         //   사람이 보는 활성 지표는 아래 `activity`를 쓴다.
         subjectsActive: one(subjActive),
+        subjectsOnline: one(subjOnline),
+        onlineWindowMin: ONLINE_WINDOW_MIN,
         subjectsNew24h: one(subjNew),
         subscribers: subs,
         tickets: one(tkTotal),
