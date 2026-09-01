@@ -7,9 +7,9 @@
 import { NextResponse } from 'next/server';
 import { and, desc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '../../../../db';
-import { announcements, appSettings } from '../../../../db/schema';
+import { announcements, appSettings, subjects } from '../../../../db/schema';
 import { getActiveApp } from '../../../../lib/apps';
-import { sessionFromRequest } from '../../../../lib/auth/session';
+import { sessionFromRequest, shouldRenew, signSession } from '../../../../lib/auth/session';
 import { recordActive } from '../../../../lib/activity';
 import { afterSafe } from '../../../../lib/afterSafe';
 import { checkLimit, clientIp } from '../../../../lib/ratelimit';
@@ -54,12 +54,37 @@ export async function GET(req: Request) {
     // 토큰의 app과 조회 대상 app이 **둘 다** 맞아야 한다(A앱 토큰으로 B앱 DAU를 부풀리지 못하게).
     // 응답 후 처리 — 관측이 부팅을 1ms도 늦추지 않는다.
     const claims = sessionFromRequest(req);
+    // 재발급된 토큰. 응답에 실리면 SDK가 조용히 교체한다(앱 호출부는 모른다).
+    let session: { token: string } | undefined;
     if (claims && claims.app === app.appCode) {
       afterSafe(() => recordActive(app.appCode, claims.sid));
+
+      // ── 슬라이딩 갱신 ──
+      // 발급 경로가 로그인·기기등록 둘뿐이라 종전엔 iat+180일이 **고정 카운트다운**이었다.
+      // 앱을 매일 써도 그날이 오면 토큰이 죽고, 여긴 무효 토큰을 401 없이 조용히 무시하므로
+      // 그 사용자는 DAU에서 영구히 사라졌다 — 앱도 서버도 모르는 채로.
+      if (shouldRenew(claims.iat)) {
+        // 갱신은 30일에 1회뿐이라 여기서만 DB를 한 번 더 본다 —
+        // 탈퇴한 주체의 세션을 연장해주지 않기 위해서다(권한은 requireSubject가 따로 막지만,
+        // 죽은 세션을 연장하는 것 자체가 틀렸다).
+        const alive = (
+          await db
+            .select({ id: subjects.id })
+            .from(subjects)
+            .where(and(eq(subjects.id, claims.sid), isNull(subjects.deletedAt)))
+            .limit(1)
+        )[0];
+        if (alive) {
+          const next = signSession({ sid: claims.sid, app: claims.app });
+          if (next) session = { token: next };
+        }
+      }
     }
 
     return NextResponse.json({
       ok: true,
+      // 있을 때만 실린다. 앱 화면은 이 필드를 볼 일이 없고 SDK가 삼킨다.
+      ...(session ? { session } : {}),
       maintenance: s?.maintenance
         ? { active: true, title: s.maintenanceTitle ?? '서버 점검 중', body: s.maintenanceBody ?? '' }
         : { active: false },

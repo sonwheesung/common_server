@@ -9,7 +9,26 @@
 import crypto from 'node:crypto';
 
 const MIN_SECRET_LEN = 32;
-const TOKEN_TTL_MS = 180 * 24 * 60 * 60 * 1000; // 180일 — 앱을 자주 안 여는 사용자가 갑자기 로그아웃되지 않게 관대하게
+export const TOKEN_TTL_MS = 180 * 24 * 60 * 60 * 1000; // 180일 — 앱을 자주 안 여는 사용자가 갑자기 로그아웃되지 않게 관대하게
+
+/**
+ * 이만큼 지난 토큰은 **부팅 때 새로 발급해 준다**(bootstrap). 2026-09-01.
+ *
+ * 왜 필요한가: 종전엔 발급 경로가 로그인·기기등록 **둘뿐**이고 갱신이 없었다.
+ * 그래서 iat + 180일이 고정 카운트다운이 돼, 앱을 매일 써도 그날이 오면 토큰이 죽었다.
+ * 그러면 bootstrap이 그 토큰을 **조용히 무시**하므로(진입 게이트라 401을 안 준다)
+ * 그 사용자는 **DAU에서 영구히 사라지고**, 앱은 여전히 "로그인 돼 있다"고 믿는다.
+ * 앱에도 서버에도 신호가 없어 **아무도 모른다** — 가장 나쁜 종류의 고장이다.
+ *
+ * TTL의 1/6로 잡는다: 앱을 **6개월에 한 번만 열어도** 갱신이 물리고,
+ * 그러고도 정말 안 쓰는 기기는 결국 만료된다(영구 연장이 아니다).
+ * 재발급은 쓰기가 아니라 서명이라 DB를 안 건드린다 — 비용은 사실상 0이다.
+ */
+export const TOKEN_RENEW_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** 재발급할 때가 됐는가. 순수 함수 — 가드가 DB 없이 경계를 볼 수 있게 따로 둠. */
+export const shouldRenew = (iat: number, now: number = Date.now()): boolean =>
+  Number.isFinite(iat) && now - iat >= TOKEN_RENEW_AFTER_MS;
 
 const b64 = (v: Buffer | string): string => Buffer.from(v as Buffer).toString('base64url');
 
@@ -39,6 +58,12 @@ export interface SessionClaims {
   app: string;
 }
 
+/** 검증된 세션 — 발급 시각까지. 재발급 판정(shouldRenew)에 iat이 필요해 함께 돌려준다. */
+export interface VerifiedSession extends SessionClaims {
+  /** 발급 시각(ms). 서명 안에 있는 값이라 위조할 수 없다. */
+  iat: number;
+}
+
 /** 세션 토큰 발급. 시크릿이 없으면 null(fail-closed). */
 export function signSession(claims: SessionClaims): string | null {
   const key = secret();
@@ -48,7 +73,7 @@ export function signSession(claims: SessionClaims): string | null {
 }
 
 /** 토큰 검증 → claims. 위조·변조·만료·시크릿 미설정이면 null. 상수시간 비교. */
-export function verifySession(token: string): SessionClaims | null {
+export function verifySession(token: string): VerifiedSession | null {
   const key = secret();
   if (!key) return null;
   const dot = token.indexOf('.');
@@ -63,14 +88,14 @@ export function verifySession(token: string): SessionClaims | null {
     const p = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (typeof p.sid !== 'string' || typeof p.app !== 'string') return null;
     if (typeof p.iat !== 'number' || Date.now() - p.iat > TOKEN_TTL_MS) return null;
-    return { sid: p.sid, app: p.app };
+    return { sid: p.sid, app: p.app, iat: p.iat };
   } catch {
     return null;
   }
 }
 
 /** 요청의 `Authorization: Bearer <세션토큰>` → claims. 없거나 무효면 null. */
-export function sessionFromRequest(req: Request): SessionClaims | null {
+export function sessionFromRequest(req: Request): VerifiedSession | null {
   const auth = req.headers.get('authorization') ?? '';
   const m = /^Bearer\s+(.+)$/i.exec(auth);
   return m ? verifySession(m[1].trim()) : null;

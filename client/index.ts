@@ -19,9 +19,40 @@ import type {
 export type * from './types';
 
 /** 앱에 복사할 때 이 값을 복사본 주석에 남긴다 — 서버 계약이 바뀌었는지 판단하는 유일한 단서다. */
-export const SDK_VERSION = '2026-09-01'; // fetchBootstrap이 세션을 실어 보낸다(활성 하트비트). 2026-08-24: +MyInquiry.status 'reviewing'
+export const SDK_VERSION = '2026-09-01.2'; // 토큰 슬라이딩 갱신 + isSignedIn이 만료를 본다. 2026-09-01: fetchBootstrap이 세션을 실어 보냄
 
 const DEFAULT_TIMEOUT_MS = 10000;
+
+/**
+ * 세션 토큰 유효기간(일). **서버의 `TOKEN_TTL_MS`와 같은 값이어야 한다.**
+ * 서버가 진실이고 이건 사본이다 — 어긋나면 앞서는 쪽으로 틀리게 해둔다(아래 tokenAlive 주석).
+ */
+const SESSION_TTL_DAYS = 180;
+
+/**
+ * 토큰이 아직 살아 있는가 — 서명은 안 본다(검증은 서버가 한다. 앱은 만료만 미리 알면 된다).
+ *
+ * 왜 필요한가: 종전 `isSignedIn()`은 "저장소에 문자열이 있나"만 봤다. 그래서 만료된 토큰을
+ * 들고도 "로그인 돼 있다"고 답했고, 그걸 믿는 `ensureDeviceSession()` 같은 가드가 재등록을
+ * 영원히 건너뛰어 그 기기는 **활성 집계에서 조용히 사라졌다**.
+ *
+ * 파싱이 실패하면 **죽은 것으로 본다**(fail-closed). 깨진 토큰을 살아있다고 보면 위 공백이
+ * 그대로 재현되고, 죽은 것으로 보면 최악이 재발급 1회다(같은 deviceId면 같은 subject).
+ */
+function tokenAlive(token: string | null): boolean {
+  if (!token) return false;
+  try {
+    const dot = token.indexOf('.');
+    if (dot < 0) return false;
+    // atob는 base64url을 모르므로 표준 base64로 되돌린다(RN·웹·Node 공통).
+    const raw = atob(token.slice(0, dot).replace(/-/g, '+').replace(/_/g, '/'));
+    const iat = (JSON.parse(raw) as { iat?: number }).iat;
+    if (typeof iat !== 'number') return false;
+    return Date.now() - iat < SESSION_TTL_DAYS * 24 * 60 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
 /** 서버가 요구하는 문의 최소 길이(라우트의 CONTENT_MIN과 같은 값). */
 export const CONTENT_MIN = 5;
 /** 서버가 자르는 상한. 입력창 maxLength를 이보다 크게 두지 않는다. */
@@ -78,6 +109,18 @@ export function createCommonServer(cfg: CommonServerConfig) {
     }
   }
 
+  /** 서버가 갱신해 준 토큰으로 **조용히** 교체한다. subject는 그대로 — 사람이 바뀐 것이 아니다. */
+  async function replaceToken(next: string) {
+    if (!next || next === token) return;
+    token = next;
+    if (!storage) return;
+    try {
+      await storage.setItem(storageKey, next);
+    } catch {
+      // 저장 실패해도 이번 실행은 새 토큰으로 돌아간다 — 다음 부팅에 다시 갱신받으면 된다
+    }
+  }
+
   /** 저장소에 있던 토큰을 메모리로 끌어올린다(최초 1회). */
   async function loadToken(): Promise<string | null> {
     if (token || !storage) return token;
@@ -110,7 +153,10 @@ export function createCommonServer(cfg: CommonServerConfig) {
       if (!res) return { ok: false, reason: 'offline' };
       if (!res.ok) return { ok: false, reason: mapFail(res.status) };
       try {
-        const j = (await res.json()) as Bootstrap & { ok: boolean };
+        const j = (await res.json()) as Bootstrap & { ok: boolean; session?: { token?: string } };
+        // 서버가 슬라이딩 갱신해 준 토큰. 호출부에 드러내지 않는다 — 앱이 알 이유가 없고,
+        // 알게 두면 누군가는 그걸 로그인 상태 변화로 오해한다.
+        if (j.session?.token) await replaceToken(j.session.token);
         return { ok: true, data: { maintenance: j.maintenance, version: j.version, announcements: j.announcements } };
       } catch {
         return { ok: false, reason: 'error' };
@@ -252,8 +298,15 @@ export function createCommonServer(cfg: CommonServerConfig) {
     },
 
     /** 이 기기에 세션이 있는지. 유효한지는 아니다 — 그건 restoreSession()이 판단한다. */
+    /**
+     * 쓸 수 있는 세션이 있는가. **만료된 토큰은 false**다.
+     *
+     * 종전엔 저장소에 문자열이 있기만 하면 true였다. 그러면 만료 후에도 앱은 "로그인 됨"으로
+     * 알고, 이걸 가드로 쓰는 `ensureDeviceSession()` 같은 함수가 재등록을 영원히 건너뛰어
+     * 그 기기는 활성 집계에서 조용히 사라졌다(2026-09-01 수정).
+     */
     async isSignedIn(): Promise<boolean> {
-      return (await loadToken()) !== null;
+      return tokenAlive(await loadToken());
     },
 
     /**
