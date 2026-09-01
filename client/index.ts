@@ -19,7 +19,7 @@ import type {
 export type * from './types';
 
 /** 앱에 복사할 때 이 값을 복사본 주석에 남긴다 — 서버 계약이 바뀌었는지 판단하는 유일한 단서다. */
-export const SDK_VERSION = '2026-08-19'; // +fetchEntitlements({fresh}) (RC pull 폴백 — 웹훅 유실 복구)
+export const SDK_VERSION = '2026-09-01'; // fetchBootstrap이 세션을 실어 보낸다(활성 하트비트). 2026-08-24: +MyInquiry.status 'reviewing'
 
 const DEFAULT_TIMEOUT_MS = 10000;
 /** 서버가 요구하는 문의 최소 길이(라우트의 CONTENT_MIN과 같은 값). */
@@ -98,10 +98,15 @@ export function createCommonServer(cfg: CommonServerConfig) {
     /**
      * 부팅 조회: 점검 · 버전 게이트 · 활성 공지.
      * 실패해도 앱을 막지 말 것 — 서버가 죽었다고 사용자가 앱을 못 쓰면 안 된다(게이트는 성공했을 때만 적용).
+     *
+     * 세션이 있으면 실어 보낸다 — 서버가 그걸로 **활성 일자**를 기록한다(DAU).
+     * ⚠ 다른 라우트와 달리 여기서만 토큰은 **선택**이다. 서버는 무효한 헤더를 401로 돌려보내지 않고
+     *   조용히 무시한다 — 세션 만료가 진입 게이트(점검·강제업데이트) 판정을 막으면 안 되기 때문이다.
      */
     async fetchBootstrap(): Promise<Result<{ data: Bootstrap }>> {
       if (!baseUrl) return { ok: false, reason: 'not-configured' };
-      const res = await req(`/api/v1/bootstrap?app=${encodeURIComponent(cfg.appCode)}`);
+      await loadToken();
+      const res = await req(`/api/v1/bootstrap?app=${encodeURIComponent(cfg.appCode)}`, undefined, true);
       if (!res) return { ok: false, reason: 'offline' };
       if (!res.ok) return { ok: false, reason: mapFail(res.status) };
       try {

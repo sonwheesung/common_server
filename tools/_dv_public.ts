@@ -57,6 +57,14 @@ console.log(`[_dv_public] ${BASE} (app=${APP})\n`);
   // app 파라미터 누락도 404(400으로 흘리면 "있는 앱인지"를 탐지당한다)
   const r3 = await fetch(`${BASE}/api/v1/bootstrap`);
   check('bootstrap app 누락 404', r3.status === 404, `status=${r3.status}`);
+
+  // 부팅은 **활성 하트비트를 겸하지만**, 토큰은 어디까지나 선택이다.
+  // 무효한 토큰을 401로 잡으면 세션 만료가 **진입 게이트(점검·강제업데이트) 판정을 막는다** —
+  // 서버가 점검을 앟으려는 순간 구버전 사용자가 그걸 못 받는 게 가장 나쁜 실패다.
+  const r4 = await fetch(`${BASE}/api/v1/bootstrap?app=${APP}`, {
+    headers: { authorization: 'Bearer not-a-real-token.deadbeef' },
+  });
+  check('bootstrap 무효 토큰이어도 200 (401 아님)', r4.status === 200, `status=${r4.status}`);
 }
 
 // ── tickets: 거부 경로 ──

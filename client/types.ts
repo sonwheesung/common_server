@@ -55,7 +55,10 @@ export interface MyInquiry {
   id: string;
   category: SupportCategory;
   content: string;
-  status: 'open' | 'replied' | 'resolved';
+  /** 대기 → 확인 중 → 답변함 / 완료.
+   *  `reviewing`은 "접수됐고 보고 있는데 아직 답이 없다"는 뜻이다 — 사용자에게 그대로 보여줄 만한 상태다.
+   *  ⚠ 여기 없는 값이 올 수도 있다고 가정하고 분기할 것(서버가 상태를 늘려도 앱이 안 깨지게). */
+  status: 'open' | 'reviewing' | 'replied' | 'resolved';
   /** 운영자 답변. 이게 로그인의 존재 이유다(익명 문의는 돌려줄 경로가 없다). */
   reply: string | null;
   createdAt: string;

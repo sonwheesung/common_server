@@ -11,6 +11,8 @@ import { getActiveApp } from '../../../../../lib/apps';
 import { isProviderSupported, verifyProviderToken } from '../../../../../lib/auth/providers';
 import { ensureSubject, providerConfig } from '../../../../../lib/auth/subject';
 import { sessionReady, signSession } from '../../../../../lib/auth/session';
+import { recordActive } from '../../../../../lib/activity';
+import { afterSafe } from '../../../../../lib/afterSafe';
 import { checkLimit, clientIp } from '../../../../../lib/ratelimit';
 import { reportError } from '../../../../../lib/observability';
 
@@ -48,6 +50,9 @@ export async function POST(req: Request) {
     const subject = await ensureSubject(app.appCode, provider, identity.providerId, identity.email);
     const token = signSession({ sid: subject.id, app: app.appCode });
     if (!token) return NextResponse.json({ ok: false, reason: 'not-configured' }, { status: 503 });
+
+    // 활성 하트비트 — 로그인 직후에는 bootstrap에 아직 토큰이 없어 그날이 비는 것을 막는다(devices와 같은 이유).
+    afterSafe(() => recordActive(app.appCode, subject.id));
 
     // providerId는 돌려주지 않는다 — 앱이 쓸 데가 없고, 로그에 남으면 계정 식별자가 새어나간다.
     return NextResponse.json({

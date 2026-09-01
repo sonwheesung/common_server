@@ -1,0 +1,129 @@
+// 활성 일자 기록·집계 — DAU/WAU/MAU와 요일 추이의 원천. 2026-09-01.
+//
+// **왜 별도 테이블인가**: `subjects.lastSeenAt`은 주체당 한 칸이라 덮어써진다. 매일 켠 사람도
+// "오늘" 버킷에만 잡히므로 과거로 갈수록 조용히 과소 집계된다. 날짜 축은 최신 쪽으로 단조 편향되기
+// 때문에 왜곡이 눈에 안 띈다 — 그래서 "언제 마지막에 봤나"와 "어느 날에 활성이었나"를 나눠 둔다.
+//
+// 순수 계산(요일 평균·날짜 접기)은 lib/activityMath.ts에 따로 있다 — 가드가 DB 없이 **호출해서** 검증하기 위해서다.
+import { and, eq, lt, sql } from 'drizzle-orm';
+import { db } from '../db';
+import { subjectActiveDay, subjects } from '../db/schema';
+import { ACTIVE_DAY_RETENTION_DAYS } from './retention';
+import {
+  DAY_MS,
+  SERIES_DAYS,
+  WEEKDAY_WINDOW_DAYS,
+  kstYmd,
+  weekdayAverages,
+  weekdayChartReady,
+  windowDayKeys,
+  type WeekdayBucket,
+} from './activityMath';
+
+// 순수 계산은 activityMath.ts에 있다(가드가 DB 없이 불러야 해서). 호출부는 여기만 보면 되게 re-export한다.
+export * from './activityMath';
+
+/**
+ * 활성 기록 — 하트비트에서 부른다. 하루 두 번째부터는 무동작(PK 충돌 → DO NOTHING)이라 멱등이다.
+ * 그래서 하트비트 지점이 여러 곳이어도(bootstrap·devices·login) 중복 계상되지 않는다.
+ *
+ * **새 행이 실제로 들어갔을 때만** `lastSeenAt`을 갱신한다 — 쓰기가 1일 1회로 묶여서
+ * 부팅마다 UPDATE가 나가지 않는다.
+ *
+ * **실패는 삼킨다.** 관측이 본 기능(부팅·로그인)을 막으면 안 된다.
+ */
+export async function recordActive(appCode: string, subjectId: string, now: Date = new Date()): Promise<void> {
+  try {
+    const inserted = await db
+      .insert(subjectActiveDay)
+      .values({ appCode, subjectId, day: kstYmd(now) })
+      .onConflictDoNothing()
+      .returning({ day: subjectActiveDay.day });
+    if (inserted.length) {
+      await db.update(subjects).set({ lastSeenAt: now }).where(eq(subjects.id, subjectId));
+    }
+  } catch {
+    /* 관측 실패는 무시 */
+  }
+}
+
+/** 보관기간 경과분 파기. 경과 기준 delete만 — 현재 데이터 무영향. 반환 = 지운 행 수. */
+export async function purgeActiveDays(now: Date = new Date()): Promise<number> {
+  const cutoff = kstYmd(new Date(now.getTime() - ACTIVE_DAY_RETENTION_DAYS * DAY_MS));
+  const r = await db
+    .delete(subjectActiveDay)
+    .where(lt(subjectActiveDay.day, cutoff))
+    .returning({ day: subjectActiveDay.day });
+  return r.length;
+}
+
+export interface ActivitySummary {
+  /** 오늘(KST) 활성 주체 수. */
+  dau: number;
+  /** 최근 7일 / 30일 순 활성 주체 수(중복 제거). */
+  wau: number;
+  mau: number;
+  /** 최근 SERIES_DAYS일 일별 활성자 — 0인 날도 채워져 있다. */
+  series: { day: string; n: number }[];
+  weekday: WeekdayBucket[];
+  /** 첫 기록일부터 오늘까지 며칠어치를 **모았나**. 0 = 수집 개시 전. */
+  coverageDays: number;
+  chartReady: boolean;
+  windowDays: number;
+}
+
+/**
+ * 앱 하나의 활성 지표. 요일 창(56일) 한 번만 스캔하고 나머지는 그 위에서 접는다.
+ *
+ * PK가 (app, subject, day)라 날짜별 `count(*)`가 곧 순 활성자 수다 — distinct가 필요 없다.
+ * 반면 WAU/MAU는 여러 날에 걸치므로 `count(distinct subject_id)`가 맞다.
+ */
+export async function activitySummary(appCode: string, now: Date = new Date()): Promise<ActivitySummary> {
+  const keys = windowDayKeys(WEEKDAY_WINDOW_DAYS, now);
+  const from = keys[0];
+  const today = kstYmd(now);
+  const wauFrom = kstYmd(new Date(now.getTime() - 6 * DAY_MS)); // 오늘 포함 7일
+  const mauFrom = kstYmd(new Date(now.getTime() - 29 * DAY_MS));
+
+  const [daily, uniq, first] = await Promise.all([
+    db
+      .select({ day: subjectActiveDay.day, n: sql<number>`count(*)::int` })
+      .from(subjectActiveDay)
+      .where(and(eq(subjectActiveDay.appCode, appCode), sql`${subjectActiveDay.day} >= ${from}`))
+      .groupBy(subjectActiveDay.day),
+    db
+      .select({
+        wau: sql<number>`count(distinct ${subjectActiveDay.subjectId}) filter (where ${subjectActiveDay.day} >= ${wauFrom})::int`,
+        mau: sql<number>`count(distinct ${subjectActiveDay.subjectId}) filter (where ${subjectActiveDay.day} >= ${mauFrom})::int`,
+      })
+      .from(subjectActiveDay)
+      .where(and(eq(subjectActiveDay.appCode, appCode), sql`${subjectActiveDay.day} >= ${mauFrom}`)),
+    db
+      .select({ first: sql<string | null>`min(${subjectActiveDay.day})` })
+      .from(subjectActiveDay)
+      .where(eq(subjectActiveDay.appCode, appCode)),
+  ]);
+
+  const per = new Map(daily.map((r) => [String(r.day).slice(0, 10), r.n]));
+  const filled: [string, number][] = keys.map((k) => [k, per.get(k) ?? 0]);
+
+  // 수집 경과일 — 첫 기록일부터 오늘까지(첫날 포함). 한 행도 없으면 0.
+  const firstDay = first[0]?.first;
+  let coverageDays = 0;
+  if (firstDay) {
+    const start = Date.parse(`${String(firstDay).slice(0, 10)}T00:00:00Z`);
+    const end = Date.parse(`${today}T00:00:00Z`);
+    if (Number.isFinite(start) && Number.isFinite(end)) coverageDays = Math.floor((end - start) / DAY_MS) + 1;
+  }
+
+  return {
+    dau: per.get(today) ?? 0,
+    wau: uniq[0]?.wau ?? 0,
+    mau: uniq[0]?.mau ?? 0,
+    series: filled.slice(-SERIES_DAYS).map(([day, n]) => ({ day, n })),
+    weekday: weekdayAverages(filled),
+    coverageDays,
+    chartReady: weekdayChartReady(coverageDays),
+    windowDays: WEEKDAY_WINDOW_DAYS,
+  };
+}

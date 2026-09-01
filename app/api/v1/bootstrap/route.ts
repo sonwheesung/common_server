@@ -2,11 +2,16 @@
 //
 // 앱 로컬 신뢰 금지: 진입 게이트(강제 업데이트·점검)는 **이 응답으로만** 결정한다.
 // 스토어 심사에 묶이지 않고 DB로 앱 진입을 막을 수 있는 게 이 라우트의 존재 이유다.
+//
+// **활성 하트비트를 겸한다**(2026-09-01). 매 실행마다 불리는 유일한 라우트라서 여기가 DAU의 관측점이다.
 import { NextResponse } from 'next/server';
 import { and, desc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { db } from '../../../../db';
 import { announcements, appSettings } from '../../../../db/schema';
 import { getActiveApp } from '../../../../lib/apps';
+import { sessionFromRequest } from '../../../../lib/auth/session';
+import { recordActive } from '../../../../lib/activity';
+import { afterSafe } from '../../../../lib/afterSafe';
 import { checkLimit, clientIp } from '../../../../lib/ratelimit';
 import { reportError } from '../../../../lib/observability';
 
@@ -42,6 +47,16 @@ export async function GET(req: Request) {
     ]);
 
     const s = settingsRows[0];
+
+    // ── 활성 하트비트 ──
+    // 토큰은 **선택**이다. 다른 라우트와 달리 헤더가 무효여도 401로 막지 않고 조용히 건너뛴다 —
+    // 여기는 진입 게이트라, 세션이 만료됐다는 이유로 점검·강제업데이트 판정을 못 받으면 안 된다.
+    // 토큰의 app과 조회 대상 app이 **둘 다** 맞아야 한다(A앱 토큰으로 B앱 DAU를 부풀리지 못하게).
+    // 응답 후 처리 — 관측이 부팅을 1ms도 늦추지 않는다.
+    const claims = sessionFromRequest(req);
+    if (claims && claims.app === app.appCode) {
+      afterSafe(() => recordActive(app.appCode, claims.sid));
+    }
 
     return NextResponse.json({
       ok: true,

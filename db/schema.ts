@@ -230,6 +230,35 @@ export const purchaseEvents = pgTable(
   ],
 );
 
+// ── 활성 일자 ── DAU/WAU/MAU와 요일 추이의 원천. 2026-09-01.
+//
+// **왜 `subjects.lastSeenAt`으로는 안 되는가**: 그 컬럼은 주체당 **한 칸**이라 덮어써진다.
+// 매일 켠 사람도 "오늘" 버킷에만 잡히므로 과거로 갈수록 체계적으로 과소 집계된다 —
+// 날짜 축은 최신 쪽으로 단조 편향되기 때문에 왜곡이 조용하고 크다(배구 서버가 요일 차트에서 겪은 함정).
+// 그래서 "언제 마지막에 봤나"(lastSeenAt)와 "어느 날에 활성이었나"(이 테이블)를 **다른 사실로** 나눠 둔다.
+//
+// day는 timestamp가 아니라 **KST로 접은 'YYYY-MM-DD' 문자열**이다. 어느 시간대로 하루를 자를지는
+// 운영 판단이므로 DB(UTC)에 맡기지 않고 코드(lib/activity.ts)에 명시한다.
+//
+// PK가 곧 멱등키다 — 하루에 몇 번을 켜도 1행. 그래서 하트비트가 몇 군데에 있어도 중복 계상되지 않는다.
+// 개인정보는 없다(주체 id + 날짜뿐. IP·기기지문 없음). 보관기간은 lib/retention.ts.
+export const subjectActiveDay = pgTable(
+  'subject_active_day',
+  {
+    appCode: text('app_code')
+      .notNull()
+      .references(() => apps.appCode),
+    subjectId: uuid('subject_id')
+      .notNull()
+      .references(() => subjects.id),
+    day: text('day').notNull(), // KST 'YYYY-MM-DD'
+  },
+  (t) => [
+    primaryKey({ columns: [t.appCode, t.subjectId, t.day] }),
+    index('subject_active_day_app_day_idx').on(t.appCode, t.day), // 일별 집계 스캔
+  ],
+);
+
 export type App = typeof apps.$inferSelect;
 export type AppSettings = typeof appSettings.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
@@ -238,3 +267,4 @@ export type Subject = typeof subjects.$inferSelect;
 export type AppAuthProvider = typeof appAuthProviders.$inferSelect;
 export type Entitlement = typeof entitlements.$inferSelect;
 export type PurchaseEvent = typeof purchaseEvents.$inferSelect;
+export type SubjectActiveDay = typeof subjectActiveDay.$inferSelect;

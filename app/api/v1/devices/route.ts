@@ -10,6 +10,8 @@ import { NextResponse } from 'next/server';
 import { getActiveApp } from '../../../../lib/apps';
 import { ensureDeviceSubject } from '../../../../lib/auth/subject';
 import { sessionReady, signSession } from '../../../../lib/auth/session';
+import { recordActive } from '../../../../lib/activity';
+import { afterSafe } from '../../../../lib/afterSafe';
 import { checkLimit, clientIp } from '../../../../lib/ratelimit';
 import { reportError } from '../../../../lib/observability';
 
@@ -45,6 +47,11 @@ export async function POST(req: Request) {
     }
     const token = signSession({ sid: subject.id, app: app.appCode });
     if (!token) return NextResponse.json({ ok: false, reason: 'not-configured' }, { status: 503 });
+
+    // 활성 하트비트 — bootstrap과 **둘 다** 찍는다. 앱은 이 둘을 병렬로 쏘므로 첫 실행·재설치 때는
+    // bootstrap에 아직 토큰이 없다. 여기가 없으면 그 날짜가 통째로 비어 신규 사용자의 첫날이 사라진다.
+    // (app, subject, day) PK가 멱등을 보장하므로 두 곳에서 찍혀도 하루 1행이다.
+    afterSafe(() => recordActive(app.appCode, subject.id));
 
     return NextResponse.json({ ok: true, token, subject: { id: subject.id, email: null } });
   } catch (e) {

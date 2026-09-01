@@ -8,6 +8,7 @@ import { and, isNotNull, lt } from 'drizzle-orm';
 import { db } from '../../../../db';
 import { announcements, tickets } from '../../../../db/schema';
 import { ANNOUNCEMENT_PURGE_AFTER_END_DAYS, TICKET_RETENTION_DAYS, daysAgo } from '../../../../lib/retention';
+import { purgeActiveDays } from '../../../../lib/activity';
 import { reportError } from '../../../../lib/observability';
 
 export const dynamic = 'force-dynamic';
@@ -40,7 +41,13 @@ export async function GET(req: Request) {
       )
       .returning({ id: announcements.id });
 
-    return NextResponse.json({ ok: true, purged: { tickets: purgedTickets.length, announcements: purgedAnns.length } });
+    // 활성 일자 — 경과 기준 delete만. 주체 id + 날짜뿐이라 엇은 정보지만 목적이 끝나면 지운다는 원칙은 같다.
+    const purgedDays = await purgeActiveDays();
+
+    return NextResponse.json({
+      ok: true,
+      purged: { tickets: purgedTickets.length, announcements: purgedAnns.length, activeDays: purgedDays },
+    });
   } catch (e) {
     reportError(e, 'cron/purge');
     return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });
