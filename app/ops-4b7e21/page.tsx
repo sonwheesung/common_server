@@ -13,6 +13,10 @@
 // 대시보드 요약도 만들 수 없다(각 탭이 자기 데이터만 알기 때문).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+// 순수 계산만 가져온다 — activityMath는 drizzle·next·env를 import하지 않아 클라이언트 번들에 안전하다.
+// 계산을 화면이 다시 구현하면 서버와 어긋난다(요일 기준이 한 칸만 밀려도 잔디가 통째로 틀린다).
+import { calendarWeeks, heatLevel, longestStreak } from '../../lib/activityMath';
 import {
   AlertTriangle,
   Bell,
@@ -2099,9 +2103,151 @@ function TicketModal({
 
 const SUBJ_LIMIT = 50;
 
+type HeatDay = { day: string; h: number };
+type HeatData = {
+  subject: { id: string; kind: string; provider: string; email: string | null; createdAt: string; lastSeenAt: string | null; deletedAt: string | null };
+  from: string;
+  to: string;
+  days: HeatDay[];
+  collectingFrom: string | null;
+  today: string;
+};
+
+/** 잔디 한 칸의 색. 0단계(활동 없음)와 **수집 전**을 다르게 칠하는 것이 이 컴포넌트의 요점이다. */
+const HEAT_BG = ['bg-accent/20', 'bg-accent/45', 'bg-accent/70', 'bg-accent'] as const;
+
+/**
+ * 활동 달력("잔디") — 이 사람이 **언제 왔나**.
+ *
+ * ⚠ 빈 칸이 두 종류다. 같은 색으로 칠하면 거짓말이 된다:
+ *   · 수집 전  — 그 앱이 활성 일자를 모으기 시작하기 전. **활동이 없었던 게 아니라 모른다**
+ *   · 활동 없음 — 모으고 있었는데 그날 안 왔다
+ * 그리고 행은 있는데 시각이 0인 날이 또 다르다 — 활동은 있었고 **시각만** 모르는 날이다
+ * (시각 비트는 2026-09-01부터 모은다). 그건 가장 옅은 단계로 칠하고 툴팁에 적는다.
+ */
+function ActivityHeatmap({ data }: { data: HeatData }) {
+  const keys = useMemo(() => {
+    const out: string[] = [];
+    const start = Date.parse(`${data.from}T00:00:00Z`);
+    const end = Date.parse(`${data.to}T00:00:00Z`);
+    for (let t = start; t <= end; t += 86400_000) out.push(new Date(t).toISOString().slice(0, 10));
+    return out;
+  }, [data.from, data.to]);
+
+  const byDay = useMemo(() => new Map(data.days.map((d) => [d.day, d.h])), [data.days]);
+  const weeks = useMemo(() => calendarWeeks(keys), [keys]);
+  const activeDays = data.days.length;
+  const streak = useMemo(() => longestStreak(data.days.map((d) => d.day)), [data.days]);
+
+  // 월 라벨 — 각 주 열의 첫 날이 달의 첫 주면 라벨을 단다(GitHub과 같은 규칙).
+  const monthLabel = (col: (string | null)[]) => {
+    const first = col.find(Boolean);
+    if (!first) return '';
+    const d = Number(first.slice(8, 10));
+    return d <= 7 ? `${Number(first.slice(5, 7))}월` : '';
+  };
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
+        <span>
+          <span className="text-fg-muted">활동한 날 </span>
+          <strong className="font-semibold">{activeDays}일</strong>
+        </span>
+        <span>
+          <span className="text-fg-muted">최장 연속 </span>
+          <strong className="font-semibold">{streak}일</strong>
+        </span>
+        <span>
+          <span className="text-fg-muted">최근 접속 </span>
+          <strong className="font-semibold">
+            {data.subject.lastSeenAt ? `${fmtShort(data.subject.lastSeenAt)} · ${ago(data.subject.lastSeenAt)}` : '기록 없음'}
+          </strong>
+        </span>
+      </div>
+
+      <TableScroll>
+        <div className="inline-block">
+          <div className="flex gap-[3px] pl-7 text-[10px] text-fg-muted">
+            {weeks.map((col, i) => (
+              <span key={i} className="w-[11px] shrink-0 whitespace-nowrap">
+                {monthLabel(col)}
+              </span>
+            ))}
+          </div>
+          <div className="mt-1 flex gap-[3px]">
+            {/* 요일 축은 월~일 — 같은 화면의 요일 평균 차트와 같은 순서여야 한다 */}
+            <div className="mr-1 flex w-6 shrink-0 flex-col gap-[3px] text-[10px] leading-[11px] text-fg-muted">
+              {['월', '', '수', '', '금', '', '일'].map((l, i) => (
+                <span key={i} className="h-[11px]">
+                  {l}
+                </span>
+              ))}
+            </div>
+            {weeks.map((col, i) => (
+              <div key={i} className="flex flex-col gap-[3px]">
+                {col.map((day, j) => {
+                  if (!day) return <span key={j} className="size-[11px]" />;
+                  const uncollected = !data.collectingFrom || day < data.collectingFrom;
+                  const future = day > data.today;
+                  const h = byDay.get(day);
+                  const title = future
+                    ? `${day} · 아직 오지 않은 날`
+                    : uncollected
+                      ? `${day} · 수집 전 — 활동이 없었다는 뜻이 아닙니다`
+                      : h === undefined
+                        ? `${day} · 활동 없음`
+                        : h === 0
+                          ? `${day} · 활동 있음 (시각 기록 전)`
+                          : `${day} · ${h}개 시각에 활성`;
+                  const cls =
+                    future || uncollected
+                      ? 'border border-dashed border-border bg-transparent'
+                      : h === undefined
+                        ? 'bg-muted'
+                        : HEAT_BG[heatLevel(h) - 1];
+                  return <span key={j} title={title} className={`size-[11px] rounded-[2px] ${cls}`} />;
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </TableScroll>
+
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-fg-muted">
+        <span className="flex items-center gap-1.5">
+          <span className="size-[11px] rounded-[2px] border border-dashed border-border" /> 수집 전
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="size-[11px] rounded-[2px] bg-muted" /> 활동 없음
+        </span>
+        <span className="flex items-center gap-1.5">
+          적음
+          {HEAT_BG.map((c) => (
+            <span key={c} className={`size-[11px] rounded-[2px] ${c}`} />
+          ))}
+          많음
+        </span>
+        <span className="text-fg-muted/70">농도 = 그날 활성이었던 시각 수</span>
+      </div>
+
+      {data.collectingFrom && (
+        <p className="mt-2 text-[11px] leading-relaxed text-fg-muted">
+          이 앱의 활성 기록은 {data.collectingFrom}부터입니다. 그 이전은 점선으로 두었습니다 —{' '}
+          <strong className="font-medium text-fg">활동이 없었던 게 아니라 모으기 전입니다.</strong>
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onError: (m: string) => void }) {
   const [status, setStatus] = useState<'all' | 'active' | 'inactive' | 'withdrawn'>('all');
+  // 정렬 축 — 묻는 질문이 다르다: 가입일은 "누가 새로 왔나", 접속일은 "누가 지금 쓰고 있나".
+  const [sort, setSort] = useState<'created' | 'seen'>('created');
   const [offset, setOffset] = useState(0);
+  // 잔디 모달. id만 들고 있고 데이터는 열 때 따로 받는다 — 목록 50행마다 미리 받으면 낭비다.
+  const [heatId, setHeatId] = useState<string | null>(null);
   const [rows, setRows] = useState<SubjectRow[]>([]);
   const [total, setTotal] = useState(0);
   const [activeDays, setActiveDays] = useState(14);
@@ -2110,7 +2256,7 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
   useEffect(() => {
     let live = true;
     setLoading(true);
-    api(`subjects?app=${appCode}&status=${status}&limit=${SUBJ_LIMIT}&offset=${offset}`)
+    api(`subjects?app=${appCode}&status=${status}&sort=${sort}&limit=${SUBJ_LIMIT}&offset=${offset}`)
       .then((j) => {
         if (!live) return;
         setRows(j.subjects);
@@ -2122,7 +2268,7 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
     return () => {
       live = false;
     };
-  }, [api, appCode, status, offset, onError]);
+  }, [api, appCode, status, sort, offset, onError]);
 
   const pick = (s: typeof status) => {
     setStatus(s);
@@ -2131,7 +2277,7 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
 
   const exportCsv = () =>
     downloadCsv(
-      `subjects-${appCode}-${status}.csv`,
+      `subjects-${appCode}-${status}-${sort}.csv`,
       ['가입', '최근 접속', '상태', '이메일', '로그인', '문의 수', '구독'],
       rows.map((r) => [
         r.createdAt,
@@ -2157,8 +2303,23 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
             ['withdrawn', '탈퇴'],
           ]}
         />
+        <label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
+          정렬
+          <select
+            value={sort}
+            onChange={(e) => {
+              setSort(e.target.value as 'created' | 'seen');
+              setOffset(0); // 정렬을 바꾸면 1페이지로 — 안 그러면 다른 축의 offset이 엉뚱한 구간을 연다
+            }}
+            className="h-9 rounded-lg border border-border bg-surface px-2.5 text-[13px] text-fg"
+          >
+            <option value="created">가입일 최신순</option>
+            <option value="seen">최근 접속순</option>
+          </select>
+        </label>
         <span className="text-[12px] text-fg-muted">
           {total.toLocaleString()}명 · 활성 기준 최근 {activeDays}일 접속
+          {sort === 'seen' && <span className="text-fg-muted/70"> · 접속 기록 없는 사용자는 맨 뒤</span>}
         </span>
         <div className="ml-auto">
           <CsvButton onClick={exportCsv} />
@@ -2189,7 +2350,12 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
                   const stale =
                     !r.lastSeenAt || Date.now() - new Date(r.lastSeenAt).getTime() > activeDays * 86400_000;
                   return (
-                    <tr key={r.id} className="border-b border-border last:border-0">
+                    <tr
+                      key={r.id}
+                      onClick={() => setHeatId(r.id)}
+                      className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/60"
+                      title="클릭하면 활동 달력을 봅니다"
+                    >
                       <td className={td}>
                         {r.deletedAt ? (
                           <Badge tone="danger">탈퇴</Badge>
@@ -2243,7 +2409,55 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
           </EmptyState>
         </div>
       )}
+
+      {heatId && <HeatModal api={api} appCode={appCode} id={heatId} onClose={() => setHeatId(null)} />}
     </div>
+  );
+}
+
+/** 잔디 모달 — 데이터는 **열 때 받는다**. 목록 50행마다 미리 받으면 대부분 안 볼 데이터를 긁는 셈이다. */
+function HeatModal({
+  api,
+  appCode,
+  id,
+  onClose,
+}: {
+  api: Api;
+  appCode: string;
+  id: string;
+  onClose: () => void;
+}) {
+  const [data, setData] = useState<HeatData | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    api(`subjects/activity?app=${appCode}&id=${id}`)
+      .then((j) => live && setData(j))
+      .catch((e) => live && setErr(String((e as Error).message)));
+    return () => {
+      live = false;
+    };
+  }, [api, appCode, id]);
+
+  return (
+    <Modal
+      title="활동 달력"
+      sub={data ? `${subjectLabel(data.subject.email, data.subject.id)} · ${data.subject.provider}` : id}
+      wide
+      onClose={onClose}
+      footer={
+        err ? <span className="mr-auto text-[12px] text-danger">{err}</span> : <Button onClick={onClose}>닫기</Button>
+      }
+    >
+      {data ? (
+        <ActivityHeatmap data={data} />
+      ) : err ? (
+        <p className="text-[13px] text-danger">{err}</p>
+      ) : (
+        <EmptyState icon={Loader2}>불러오는 중…</EmptyState>
+      )}
+    </Modal>
   );
 }
 

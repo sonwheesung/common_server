@@ -35,6 +35,68 @@ export const HOUR_MIN_DAYS = 3;
 /** 시간대 차트를 그려도 되는가 — 판정 축은 **시각 비트를 모은 일수**다(날짜 수집일과 다르다). */
 export const hourChartReady = (hourCoverageDays: number): boolean => hourCoverageDays >= HOUR_MIN_DAYS;
 
+/** 잔디(활동 달력)가 보여주는 기간. 26주 = 반년 — 모달 폭에 가로 스크롤 없이 들어가는 최대치. */
+export const HEAT_WEEKS = 26;
+
+/** `hours` 비트마스크에서 **몇 개 시각에 활성이었나**. 잔디의 농도가 된다. */
+export function hourCount(mask: number): number {
+  let n = 0;
+  for (let i = 0; i < 24; i++) if ((mask >> i) & 1) n++;
+  return n;
+}
+
+/**
+ * 시각 수 → 농도 단계(1~4). **0단계는 여기서 안 만든다** — 호출부가 "그날 행이 있나"로 먼저 가른다.
+ *
+ * ⚠ 행은 있는데 `hours === 0`인 날이 있다: 시각 비트를 2026-09-01부터 모으기 시작해서
+ *   그 이전 행은 전부 0이다. 그건 "활동 없음"이 아니라 **"활동은 있었고 시각만 모름"**이라
+ *   1단계로 칠하고 툴팁에 그렇게 적는다. 0으로 칠하면 없는 날처럼 보인다.
+ */
+export const heatLevel = (hours: number): 1 | 2 | 3 | 4 =>
+  hours >= 8 ? 4 : hours >= 4 ? 3 : hours >= 2 ? 2 : 1;
+
+/**
+ * 날짜 키 목록 → **월요일 시작 주 격자**. 열 = 주, 행 = 요일(월~일). 앞쪽 빈칸은 null.
+ *
+ * 요일 축을 `MON_FIRST`(월~일)와 맞춘다 — GitHub은 일요일 시작이지만, 같은 화면의 요일 평균 차트가
+ * 월요일 시작이라 **둘이 어긋나면 같은 주를 두 번 다르게 읽게 된다.** 바깥 관습보다 내부 일관성이 먼저다.
+ */
+export function calendarWeeks(keys: readonly string[]): (string | null)[][] {
+  if (!keys.length) return [];
+  const weeks: (string | null)[][] = [];
+  // dowOf: 0=일 … 6=토 → 월요일 기준 0~6으로 옮긴다
+  const monIdx = (ymd: string) => (dowOf(ymd) + 6) % 7;
+  let col: (string | null)[] = new Array(monIdx(keys[0])).fill(null);
+  for (const k of keys) {
+    col.push(k);
+    if (col.length === 7) {
+      weeks.push(col);
+      col = [];
+    }
+  }
+  if (col.length) weeks.push([...col, ...new Array(7 - col.length).fill(null)]);
+  return weeks;
+}
+
+/** 연속 활성 최대 일수. 격자보다 이게 먼저 읽히는 사람이 있다. */
+export function longestStreak(activeDays: readonly string[]): number {
+  if (!activeDays.length) return 0;
+  const set = new Set(activeDays);
+  let best = 0;
+  for (const d of set) {
+    const prev = new Date(Date.parse(`${d}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    if (set.has(prev)) continue; // 연속의 시작점만 센다
+    let n = 0;
+    let cur = d;
+    while (set.has(cur)) {
+      n++;
+      cur = new Date(Date.parse(`${cur}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    }
+    if (n > best) best = n;
+  }
+  return best;
+}
+
 /** 표시 순서: 0시부터 23시까지. */
 export const HOURS: readonly number[] = Array.from({ length: 24 }, (_, i) => i);
 

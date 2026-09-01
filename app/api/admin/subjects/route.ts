@@ -1,4 +1,4 @@
-// /api/admin/subjects?app=<appCode>&status=&limit=&offset= — 사용자(주체) 목록.
+// /api/admin/subjects?app=<appCode>&status=&sort=&limit=&offset= — 사용자(주체) 목록.
 //
 // 회원 문의가 들어와도 "이 사람이 누구이고, 언제 가입했고, 구독이 살아 있는지"를 볼 화면이 없었다.
 // 콘솔에서 문의 → 사용자로 이어지는 최소 경로를 만든다.
@@ -6,7 +6,7 @@
 // ⚠ 개인정보(이메일)를 다루는 목록이다. 관리자 전용(fail-closed) + 페이지당 상한을 둔다.
 //   provider_id 원문은 **내려주지 않는다** — 운영 판독에 쓸 일이 없고, 유출 시 계정 특정에 쓰인다.
 import { NextResponse } from 'next/server';
-import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import { db } from '../../../../db';
 import { entitlements, subjects, tickets } from '../../../../db/schema';
 import { isAdmin } from '../../../../lib/admin';
@@ -36,6 +36,13 @@ export async function GET(req: Request) {
     if (!appCode) return bad();
 
     const status = q.get('status') ?? 'all';
+    // 정렬 축 — created(가입일) | seen(최근 접속). 둘 다 최신순.
+    //   묻는 질문이 다르다: created는 "누가 새로 왔나", seen은 "누가 지금 쓰고 있나".
+    //   ⚠ seen은 lastSeenAt이 null인 사람(한 번도 하트비트가 안 붙은 구버전 사용자)을
+    //   맨 뒤로 보낸다 — nulls last. 앞으로 오면 "가장 오래된 사람"으로 오독된다.
+    const sort = q.get('sort') === 'seen' ? 'seen' : 'created';
+    const orderBy =
+      sort === 'seen' ? sql`${subjects.lastSeenAt} desc nulls last` : desc(subjects.createdAt);
     const limit = num(q.get('limit'), 50, MAX_LIMIT) || 50;
     const offset = num(q.get('offset'), 0, 100_000);
 
@@ -62,7 +69,7 @@ export async function GET(req: Request) {
         })
         .from(subjects)
         .where(where)
-        .orderBy(desc(subjects.createdAt))
+        .orderBy(orderBy)
         .limit(limit)
         .offset(offset),
       db.select({ n: count() }).from(subjects).where(where),
@@ -109,6 +116,7 @@ export async function GET(req: Request) {
       ok: true,
       total: totalRow[0]?.n ?? 0,
       activeDays: ACTIVE_DAYS,
+      sort,
       subjects: rows.map((r) => ({
         ...r,
         ticketCount: ticketCount.get(r.id) ?? 0,

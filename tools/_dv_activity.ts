@@ -11,6 +11,10 @@ import {
   DOW_LABEL,
   HOURS,
   HOUR_MIN_DAYS,
+  calendarWeeks,
+  heatLevel,
+  hourCount,
+  longestStreak,
   MON_FIRST,
   dowOf,
   hourBit,
@@ -122,6 +126,29 @@ check(
   check('HOURS는 0..23 24칸', HOURS.length === 24 && HOURS[0] === 0 && HOURS[23] === 23);
   check('시각 차트: 수집 0일이면 안 그린다', hourChartReady(0) === false);
   check(`시각 차트: 수집 ${HOUR_MIN_DAYS}일이면 그린다`, hourChartReady(HOUR_MIN_DAYS) === true);
+}
+
+// ── ⑥ 잔디(활동 달력) ──────────────────────────────────────────────────────
+{
+  check('hourCount — 0은 0', hourCount(0) === 0);
+  check('hourCount — 비트 3개', hourCount((1 << 0) | (1 << 9) | (1 << 23)) === 3);
+  check('hourCount — 24시간 전부', hourCount((1 << 24) - 1) === 24);
+
+  check('heatLevel — 1시간은 1단계', heatLevel(1) === 1);
+  check('heatLevel — 8시간은 4단계', heatLevel(8) === 4);
+
+  // 격자는 **월요일 시작**이어야 한다 — 같은 화면의 요일 평균 차트와 축이 어긋나면
+  // 같은 주를 두 번 다르게 읽게 된다. 2026-09-01은 화요일 → 첫 열 앞에 빈칸 1개.
+  const w = calendarWeeks(['2026-09-01', '2026-09-02', '2026-09-03']);
+  check('격자 — 월요일 시작 패딩', w[0][0] === null && w[0][1] === '2026-09-01', JSON.stringify(w[0]));
+  check('격자 — 열은 항상 7칸', w.every((c) => c.length === 7));
+  check('격자 — 입력이 비면 빈 배열', calendarWeeks([]).length === 0);
+
+  check('연속 — 끊긴 구간 중 최대', longestStreak(['2026-09-01', '2026-09-02', '2026-09-05']) === 2);
+  check('연속 — 순서가 섞여도 같다', longestStreak(['2026-09-05', '2026-09-02', '2026-09-01']) === 2);
+  check('연속 — 빈 입력은 0', longestStreak([]) === 0);
+  // 월을 넘는 연속이 끊기면 매달 1일마다 통계가 주저앉는다.
+  check('연속 — 월경계를 넘는다', longestStreak(['2026-08-30', '2026-08-31', '2026-09-01']) === 3);
 }
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
