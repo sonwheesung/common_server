@@ -5,6 +5,8 @@
 - Next.js 16 App Router (Vercel) + Supabase Postgres + Drizzle
 - 설계 문서: `docs/PLAN.md` — **변경 전에 먼저 읽을 것**
 - 새 앱 붙이기: `docs/ONBOARDING.md` — 순서 · 단계별 확인 명령 · 증상→원인 표
+- **앱 세션에 알리기: `docs/MULTI_SESSION.md`** — 앱마다 세션이 따로 돌고 이 저장소가 허브다.
+  `SDK_VERSION`을 올렸으면 **네 세션에 알리는 것까지가 일**이다 — 안 보내면 앱은 모른 채로 구버전을 안고 배포한다.
 
 ## 이 서버의 성질
 
