@@ -116,7 +116,7 @@ lib/                             admin·apps·auth·revenuecat·rcPull·entitlem
 | app_code | 앱 | SDK 복사본 | 상태 |
 |----------|-----|-----------|------|
 | `myword` | `C:\project\my_word\my_word` (Expo, 로그인 없음) | **2026-08-06** | 문의는 이미 공통 서버로 들어온다. 하지만 최초판 SDK라 **신원(deviceId)이 없다** — 문의가 전부 익명이라 답변을 돌려줄 경로가 없고 DAU도 안 잡힌다 |
-| `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-19 | 2026-08-09 등록. 문의는 **로그인 필수** 구조 |
+| `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-19 | 2026-08-09 등록. 문의는 **로그인 필수** 구조. ⚠ 비로그인 DAU를 위해 기기 subject를 따로 두므로 **로그인한 사람은 subject가 2행**이다 — 콘솔의 `사용자` 수가 조각만 부풀려 보인다(DAU는 전환일 1회만 중복). 병합 개념은 없다 |
 | `linkmemo` | `C:\project\link_memo` (Expo, 로그인 없음) | 2026-08-14 | `ensureDeviceSession()` 보유 — 하트비트를 붙이는 기준 구현체 |
 | `idearepository` | `C:\project\idea_repository` (Expo, 로그인 없음) | 2026-08-14 | 2026-08-17 등록. linkmemo와 같은 구조 |
 
