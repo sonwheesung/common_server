@@ -111,14 +111,19 @@ type Stats = {
     activeDays: number;
   };
   alerts: Alert[];
+  /** 서버가 매번 판정하는 항목 이름. 알림 0건이 "정상"인지 "판정을 안 했음"인지 구분하려면 필요하다. */
+  alertChecks: string[];
   /** 시크릿 값이 아니라 **붙었는지 여부**만. 조용한 no-op을 화면에 드러내기 위한 것이다. */
   infra: { discord: boolean; rcPullKey: boolean; rcWebhook: boolean; sentry: boolean; ratelimit: boolean };
+  /** 미설정일 때 **무엇을 넣어야 하는지**. 이름뿐이다 — 값은 서버가 내려보내지 않는다. */
+  infraEnv: { discord: string; rcPullKey: string; rcWebhook: string; sentry: string; ratelimit: string };
   /** 활성 지표 — subject_active_day 기반. `coverageDays === 0`이면 **수집 전**이다(진짜 0이 아니다). */
   activity: {
     dau: number;
     wau: number;
     mau: number;
     series: { day: string; n: number }[];
+    signups: { day: string; n: number }[];
     weekday: { dow: number; label: string; avg: number | null; samples: number }[];
     coverageDays: number;
     chartReady: boolean;
@@ -272,6 +277,12 @@ const OUTCOME: Record<string, { ko: string; tone: 'ok' | 'muted' | 'warn' | 'dan
   ignored: { ko: '무시', tone: 'muted' },
   rejected: { ko: '거부', tone: 'danger' },
 };
+
+/** 목록용 짧은 시각(`09-01 09:44`). 연도를 뺀다 — 운영 목록은 거의 항상 최근 몇 주이라 연도가 눈만 밀어낸다. */
+const fmtShort = (iso: string | null) =>
+  iso
+    ? new Date(iso).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+    : '—';
 
 const fmt = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
@@ -1009,11 +1020,19 @@ type Common = { api: Api; reload: () => Promise<void>; onError: (m: string) => v
 
 /** 운영 알림 — 임계 판정은 서버(`/api/admin/stats`)가 한다. 화면이 판정하면 임계가 UI에 흩어진다.
  *  알림이 없을 때 **아무것도 안 그리지 않는다**: "이상 없음"을 봐야 화면이 죽은 게 아님을 안다. */
-function Alerts({ rows, go }: { rows: Alert[]; go: (t: Tab) => void }) {
+/** 운영 알림. **알림이 없을 때가 더 중요하다** — 빈 화면은 "정상"과 "아무것도 안 봤음"을
+ *  구분해주지 못한다. 그래서 서버가 본 항목을 그자리에 나열한다(목록은 판정문과 같은 곳에서 온다). */
+function Alerts({ rows, checks, go }: { rows: Alert[]; checks: string[]; go: (t: Tab) => void }) {
   if (!rows.length) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-ok/25 bg-ok-soft px-4 py-3 text-[13px] font-medium text-ok">
-        <ShieldCheck className="size-4 shrink-0" /> 이상 징후 없음
+      <div className="rounded-lg border border-ok/25 bg-ok-soft px-4 py-3">
+        <p className="flex items-center gap-2 text-[13px] font-medium text-ok">
+          <ShieldCheck className="size-4 shrink-0" /> 이상 징후 없음
+          {checks.length > 0 && <span className="font-normal text-ok/70">· {checks.length}개 항목 정상</span>}
+        </p>
+        {checks.length > 0 && (
+          <p className="mt-1.5 text-[11.5px] leading-relaxed text-fg-muted">검사 항목: {checks.join(' · ')}</p>
+        )}
       </div>
     );
   }
@@ -1048,20 +1067,80 @@ function Alerts({ rows, go }: { rows: Alert[]; go: (t: Tab) => void }) {
 
 /** 인프라 배선 — 디스코드 웹훅·RC 키는 없으면 **조용히 no-op**이라 안 붙은 줄 모른다.
  *  "미설정"을 실패로 칠하지 않는다: 의도적으로 안 붙인 것들이 있다(Upstash·Sentry). 대신 결과를 적는다. */
-function InfraRow({ ok, label, on, off }: { ok: boolean; label: string; on: string; off: string }) {
+/** 배선 한 줄. 미설정이면 **무엇을 넣어야 하는지**까지 적는다 —
+ *  "미설정"만 말하면 그때부터 env 이름을 찾는 것이 일이 된다(이름 규칙은 서버가 준다). */
+function InfraRow({ ok, label, on, off, fix }: { ok: boolean; label: string; on: string; off: string; fix?: string }) {
   return (
-    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-border py-2.5 last:border-0">
-      <span className="flex items-center gap-2 text-[13px] font-medium">
-        <span className={`size-1.5 shrink-0 rounded-full ${ok ? 'bg-ok' : 'bg-fg-muted/40'}`} />
-        {label}
-      </span>
-      <span className={`text-[12px] ${ok ? 'text-fg-muted' : 'text-warn'}`}>{ok ? on : off}</span>
+    <div className="border-b border-border py-2.5 last:border-0">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="flex items-center gap-2 text-[13px] font-medium">
+          <span className={`size-1.5 shrink-0 rounded-full ${ok ? 'bg-ok' : 'bg-fg-muted/40'}`} />
+          {label}
+        </span>
+        <span className={`text-[12px] ${ok ? 'text-fg-muted' : 'text-warn'}`}>{ok ? on : off}</span>
+      </div>
+      {!ok && fix && (
+        <p className="mt-1 pl-3.5 font-mono text-[11px] leading-relaxed break-all text-fg-muted">{fix}</p>
+      )}
     </div>
+  );
+}
+
+/** 지표의 **출처** 배지. 숫자만 놓으면 보는 사람이 그게 어디서 온 것인지를 몰라
+ *  "왜 이 숫자가 저쪽과 다르지"를 매번 처음부터 추적하게 된다. */
+function Src({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded bg-muted px-1.5 py-0.5 align-middle text-[10.5px] font-medium text-fg-muted">
+      {children}
+    </span>
   );
 }
 
 /** 날짜라벨 'YYYY-MM-DD' → 'M/D'. */
 const mdOf = (ymd: string): string => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}`;
+
+/** 일별 막대 하나. 0은 높이 2px로 깔아 둔다 — "그날 0명"과 "칸이 없음"이 달라 보여야 한다. */
+function DayBars({
+  title,
+  rows,
+  unit,
+  note,
+}: {
+  title: string;
+  rows: { day: string; n: number }[];
+  unit: string;
+  note?: string;
+}) {
+  const max = Math.max(1, ...rows.map((d) => d.n));
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  return (
+    <div>
+      <p className="mb-2 flex flex-wrap items-baseline gap-x-2 text-[12px] font-medium text-fg-muted">
+        {title}
+        {note && <span className="font-normal text-fg-muted/70">{note}</span>}
+      </p>
+      <div className="flex h-24 items-stretch gap-[2px]">
+        {rows.map((d) => (
+          <div key={d.day} className="flex flex-1 flex-col justify-end" title={`${d.day} · ${d.n}${unit}`}>
+            <div
+              className={`rounded-t-[4px] ${d.n === 0 ? 'bg-border' : d.day === last?.day ? 'bg-accent' : 'bg-accent/55'}`}
+              style={{ height: d.n === 0 ? '2px' : `${Math.max((d.n / max) * 100, 8)}%` }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="mt-1.5 flex justify-between text-[11px] text-fg-muted">
+        <span>{first ? mdOf(first.day) : ''}</span>
+        <span>
+          최대 {max}
+          {unit}
+        </span>
+        <span>{last ? mdOf(last.day) : ''}</span>
+      </div>
+    </div>
+  );
+}
 
 /**
  * 활성 사용자 — DAU/WAU/MAU + 일별 추이 + 요일 평균.
@@ -1075,17 +1154,20 @@ function Activity({ a }: { a: Stats['activity'] }) {
   if (a.coverageDays === 0) {
     return (
       <section className={`${card} p-6`}>
-        <h2 className={`mb-2 ${sectionTitle}`}>활성 사용자</h2>
+        <h2 className={`mb-2 ${sectionTitle} flex items-center gap-2`}>
+          활성 사용자 <Src>자체 집계</Src>
+        </h2>
         <p className="text-[13px] leading-relaxed text-fg-muted">
           아직 수집된 기록이 없습니다 — <strong className="font-medium text-fg">0명이라는 뜻이 아닙니다.</strong>
           <br />
-          앱이 SDK 2026-09-01 이상으로 재배포되어 부팅 시 세션을 실어 보내기 시작해야 쌌입니다.
+          앱이 SDK 2026-09-01 이상으로 재배포되어 부팅 시 세션을 실어 보내기 시작해야 쌓입니다.
+          <br />
+          ※ 수집 개시 이전 기간은 소급할 수 없습니다 — 늦게 시작할수록 과거가 영구히 비어 있게 됩니다.
         </p>
       </section>
     );
   }
 
-  const max = Math.max(1, ...a.series.map((d) => d.n));
   const wMax = Math.max(1, ...a.weekday.map((w) => w.avg ?? 0));
   const first = a.series[0];
   const last = a.series[a.series.length - 1];
@@ -1093,9 +1175,18 @@ function Activity({ a }: { a: Stats['activity'] }) {
   return (
     <section className={`${card} p-6`}>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className={sectionTitle}>활성 사용자</h2>
+        <h2 className={`flex items-center gap-2 ${sectionTitle}`}>
+          활성 사용자 <Src>자체 집계</Src>
+        </h2>
         <span className="text-[12px] text-fg-muted">수집 {a.coverageDays}일차</span>
       </div>
+
+      {/* 정의를 숫자 옆에 둔다 — "활성"은 사람마다 다르게 상상하는 말이라 적어두지 않으면 오독된다. */}
+      <p className="mb-4 text-[11.5px] leading-relaxed text-fg-muted">
+        활성 = 그날 앱을 켜서 서버에 닿은 순 사용자. 하루에 여러 번 켜도 1명입니다.
+        <br />
+        기기를 바꾸거나 앱을 지우면 다른 사람으로 잡힙니다 — 낮게 나오는 쪽이 아니라 오히려 높게 나올 수 있는 방향입니다.
+      </p>
 
       {/* 헤드라인 3개 — 차트보다 먼저 읽힐 숫자 */}
       <div className="mb-6 grid grid-cols-3 gap-3">
@@ -1113,30 +1204,12 @@ function Activity({ a }: { a: Stats['activity'] }) {
         ))}
       </div>
 
-      {/* 일별 추이 — 단일 계열이라 범례가 필요 없다(제목이 계열 이름이다). */}
-      <p className="mb-2 text-[12px] font-medium text-fg-muted">최근 {a.series.length}일 일별 활성자</p>
-      <div className="flex h-24 items-stretch gap-[2px]">
-        {a.series.map((d) => {
-          const isToday = d.day === last?.day;
-          return (
-            <div
-              key={d.day}
-              className="flex flex-1 flex-col justify-end"
-              title={`${d.day} · ${d.n}명`}
-            >
-              <div
-                className={`rounded-t-[4px] ${d.n === 0 ? 'bg-border' : isToday ? 'bg-accent' : 'bg-accent/55'}`}
-                /* 0은 높이 2px로 깔아 둔다 — "활성 0"과 "칸이 없음"이 달라 보여야 한다 */
-                style={{ height: d.n === 0 ? '2px' : `${Math.max((d.n / max) * 100, 8)}%` }}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-1.5 flex justify-between text-[11px] text-fg-muted">
-        <span>{first ? mdOf(first.day) : ''}</span>
-        <span>최대 {max}명</span>
-        <span>{last ? mdOf(last.day) : ''}</span>
+      {/* 일별 추이 — 두 계열을 한 차트에 섮지 않는다. 단위가 같아도 **뜻이 다른 량**이라
+          같은 축에 놓으면 "오늘 신규가 활성보다 많네" 같은 무의미한 비교를 유도한다.
+          각각 단일 계열이라 범례도 필요 없다(제목이 계열 이름이다). */}
+      <div className="grid gap-5 sm:grid-cols-2">
+        <DayBars title={`최근 ${a.series.length}일 일별 활성자`} rows={a.series} unit="명" />
+        <DayBars title={`최근 ${a.signups.length}일 신규 가입`} rows={a.signups} unit="명" note="계측 무관 · 처음부터 쌓임" />
       </div>
 
       {/* 요일 평균 — 표본이 모자라면 그리지 않는다 */}
@@ -1201,7 +1274,17 @@ function Overview({
 
   return (
     <div className="space-y-6">
-      <Alerts rows={stats?.alerts ?? []} go={go} />
+      <Alerts rows={stats?.alerts ?? []} checks={stats?.alertChecks ?? []} go={go} />
+
+      {/* 지표의 시간 경계와 출처를 한 줄로 박아둔다.
+          적어두지 않으면 "오늘"이 UTC인지 KST인지, 구독 수가 우리 값인지 RC 값인지를
+          매번 코드를 열어 확인하게 된다(실제로 그랬다). */}
+      <p className="text-[11.5px] leading-relaxed text-fg-muted">
+        모든 날짜 경계는 <strong className="font-medium text-fg">KST(한국 00:00)</strong> 기준 · 활성·신규·문의는{' '}
+        <Src>자체 집계</Src> · 활성 구독은 <Src>RevenueCat 판정</Src> · 웹훅 거부는 <Src>수신 로그</Src>
+        <br />
+        사용자 수는 <strong className="font-medium text-fg">누적 가입자</strong>입니다 — 아래 활성 사용자와 다른 것을 재고 있습니다.
+      </p>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
@@ -1268,6 +1351,9 @@ function Overview({
         <h2 className={`mb-2 ${sectionTitle}`}>배선 상태</h2>
         <p className="mb-3 text-[12px] text-fg-muted">
           없어도 서버는 조용히 동작합니다 — 그래서 안 붙은 줄 모르는 것들입니다.
+          <br />
+          미설정 항목에는 넣어야 할 env 이름을 같이 적어둡니다(값은 표시하지 않습니다).{' '}
+          <strong className="font-medium text-fg">env는 넣고 재배포해야 적용됩니다.</strong>
         </p>
         {stats ? (
           <div>
@@ -1276,16 +1362,36 @@ function Overview({
               label="문의 디스코드 알림"
               on="연결됨"
               off="미설정 — 콘솔을 열기 전엔 문의가 온 줄 모릅니다"
+              fix={stats.infraEnv.discord}
             />
-            <InfraRow ok={stats.infra.rcWebhook} label="RC 웹훅 시크릿" on="설정됨" off="미설정 — 웹훅이 전부 401로 거부됩니다" />
+            <InfraRow
+              ok={stats.infra.rcWebhook}
+              label="RC 웹훅 시크릿"
+              on="설정됨"
+              off="미설정 — 웹훅이 전부 401로 거부됩니다"
+              fix="env가 아닙니다 — 구독 탭에서 시크릿을 생성하세요(DB 보관)"
+            />
             <InfraRow
               ok={stats.infra.rcPullKey}
               label="RC pull 키"
               on="설정됨"
               off="미설정 — 웹훅이 유실되면 복구 경로가 없습니다"
+              fix={stats.infraEnv.rcPullKey}
             />
-            <InfraRow ok={stats.infra.ratelimit} label="레이트리밋(Upstash)" on="연결됨" off="미설정 — 방어선은 문의 일일 캡뿐입니다" />
-            <InfraRow ok={stats.infra.sentry} label="오류 수집(Sentry)" on="연결됨" off="미설정 — 서버 오류가 로그에만 남습니다" />
+            <InfraRow
+              ok={stats.infra.ratelimit}
+              label="레이트리밋(Upstash)"
+              on="연결됨"
+              off="미설정 — 방어선은 문의 일일 측뿐입니다"
+              fix={stats.infraEnv.ratelimit}
+            />
+            <InfraRow
+              ok={stats.infra.sentry}
+              label="오류 수집(Sentry)"
+              on="연결됨"
+              off="미설정 — 서버 오류가 로그에만 남습니다"
+              fix={stats.infraEnv.sentry}
+            />
           </div>
         ) : (
           <p className="text-[13px] text-fg-muted">불러오는 중…</p>
@@ -2046,8 +2152,16 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
                         )}
                       </td>
                       <td className={`${td} text-fg-muted`}>{r.ticketCount || '—'}</td>
-                      <td className={`${td} text-fg-muted`} title={fmt(r.lastSeenAt)}>
-                        {ago(r.lastSeenAt)}
+                      {/* 절대시각과 상대시간을 **둘 다** 보인다 — 상대만 있으면 서버 로그와 대조할 수 없고,
+                          절대만 있으면 "오래됐나"를 암산해야 한다. 둘을 한 칸에 놓는 것이 운영에선 항상 낫다. */}
+                      <td className={`${td} text-fg-muted`}>
+                        {r.lastSeenAt ? (
+                          <span className="whitespace-nowrap">
+                            {fmtShort(r.lastSeenAt)} <span className="text-fg-muted/70">· {ago(r.lastSeenAt)}</span>
+                          </span>
+                        ) : (
+                          '기록 없음'
+                        )}
                       </td>
                       <td className={`${td} text-fg-muted`}>{fmt(r.createdAt)}</td>
                     </tr>

@@ -65,6 +65,9 @@ export interface ActivitySummary {
   mau: number;
   /** 최근 SERIES_DAYS일 일별 활성자 — 0인 날도 채워져 있다. */
   series: { day: string; n: number }[];
+  /** 같은 창의 일별 **신규 주체** 수. 활성과 같은 축에 두어야 "새로 온 건지 돌아온 건지"가 보인다.
+   *  ⚠ 이건 하트비트와 무관하게 **처음부터 쌓여 있는** 값이다(subjects.createdAt) — 수집 개시일과 무관하다. */
+  signups: { day: string; n: number }[];
   weekday: WeekdayBucket[];
   /** 첫 기록일부터 오늘까지 며칠어치를 **모았나**. 0 = 수집 개시 전. */
   coverageDays: number;
@@ -85,7 +88,7 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
   const wauFrom = kstYmd(new Date(now.getTime() - 6 * DAY_MS)); // 오늘 포함 7일
   const mauFrom = kstYmd(new Date(now.getTime() - 29 * DAY_MS));
 
-  const [daily, uniq, first] = await Promise.all([
+  const [daily, uniq, first, signup] = await Promise.all([
     db
       .select({ day: subjectActiveDay.day, n: sql<number>`count(*)::int` })
       .from(subjectActiveDay)
@@ -102,9 +105,24 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
       .select({ first: sql<string | null>`min(${subjectActiveDay.day})` })
       .from(subjectActiveDay)
       .where(eq(subjectActiveDay.appCode, appCode)),
+    // 신규 가입 — created_at을 **KST로 접어서** 세다. 활성 쪽과 같은 날짜 경계를 써야 두 차트가 나란히 비교된다.
+    db
+      .select({
+        day: sql<string>`to_char(${subjects.createdAt} at time zone 'Asia/Seoul', 'YYYY-MM-DD')`,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(subjects)
+      .where(
+        and(
+          eq(subjects.appCode, appCode),
+          sql`${subjects.createdAt} >= (${from}::date - 1) at time zone 'Asia/Seoul'`,
+        ),
+      )
+      .groupBy(sql`1`),
   ]);
 
   const per = new Map(daily.map((r) => [String(r.day).slice(0, 10), r.n]));
+  const perSignup = new Map(signup.map((r) => [String(r.day).slice(0, 10), r.n]));
   const filled: [string, number][] = keys.map((k) => [k, per.get(k) ?? 0]);
 
   // 수집 경과일 — 첫 기록일부터 오늘까지(첫날 포함). 한 행도 없으면 0.
@@ -121,6 +139,7 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
     wau: uniq[0]?.wau ?? 0,
     mau: uniq[0]?.mau ?? 0,
     series: filled.slice(-SERIES_DAYS).map(([day, n]) => ({ day, n })),
+    signups: keys.slice(-SERIES_DAYS).map((day) => ({ day, n: perSignup.get(day) ?? 0 })),
     weekday: weekdayAverages(filled),
     coverageDays,
     chartReady: weekdayChartReady(coverageDays),

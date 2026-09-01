@@ -34,6 +34,19 @@ const bad = (reason = 'bad-request') => NextResponse.json({ ok: false, reason },
 /** 미처리 = 대기 + 확인 중. "확인 중"을 처리됨으로 세면 조사하다 만 문의가 목록에서 사라진다. */
 const PENDING = ['open', 'reviewing'];
 
+/** 이 라우트가 매번 판정하는 항목. 알림이 0건일 때 화면이 "무엇이 정상인지"를 말할 수 있게 함께 내려보낸다.
+ *  아래 판정문을 늘리면 **여기도 같이 늘린다** — 어긋나면 화면이 안 본 것을 봤다고 말하게 된다. */
+const ALERT_CHECKS = [
+  '앱 활성',
+  '점검 모드',
+  '문의 방치',
+  '문의 일일 캡',
+  '웹훅 거부',
+  'RC 웹훅 시크릿',
+  '문의 알림 채널',
+  '활성 계측',
+];
+
 export async function GET(req: Request) {
   if (!isAdmin(req)) return deny();
   try {
@@ -119,6 +132,17 @@ export async function GET(req: Request) {
       rcWebhook: app.rcWebhookSecretHash !== null,
       sentry: sentryEnabled(),
       ratelimit: Boolean(process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL),
+    };
+
+    // 미설정을 **어떻게 고치는지**까지 화면에 내려준다 — 이름만 내려가고 **값은 절대 안 나간다**.
+    // env 이름 규칙은 lib/notify.ts · lib/rcPull.ts에 있고, 화면이 그걸 베꼈 쓰면 반드시 어깋난다.
+    const UP = appCode.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    const infraEnv = {
+      discord: `DISCORD_TICKET_WEBHOOK_URL_${UP}`,
+      rcPullKey: `RC_SECRET_API_KEY_${UP}`,
+      rcWebhook: '', // env가 아니다 — 콘솔 구독 탭에서 생성한다(DB 보관)
+      sentry: 'SENTRY_DSN',
+      ratelimit: 'UPSTASH_REDIS_REST_URL · UPSTASH_REDIS_REST_TOKEN',
     };
 
     const alerts: Alert[] = [];
@@ -224,7 +248,11 @@ export async function GET(req: Request) {
         activeDays: ACTIVE_DAYS,
       },
       alerts,
+      // 알림이 빈 것이 "정상"인지 "판정을 안 했음"인지 화면이 구분할 수 있게,
+      // **무엇을 봤는지**를 함께 내려보낸다. 상수가 아니라 위 판정문과 같은 곳에 둔다.
+      alertChecks: ALERT_CHECKS,
       infra,
+      infraEnv,
       activity,
       errors: { byReason, recent, rejected24h: rejected24 },
     });

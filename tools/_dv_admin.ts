@@ -75,10 +75,13 @@ if (TOKEN) {
       kpi?: Record<string, number>;
       alerts?: { key: string; severity: string }[];
       infra?: Record<string, unknown>;
+      infraEnv?: Record<string, string>;
+      alertChecks?: string[];
       errors?: { byReason: unknown[]; recent: unknown[] };
       activity?: {
         dau: number; wau: number; mau: number;
         series: { day: string; n: number }[];
+        signups: { day: string; n: number }[];
         weekday: { avg: number | null; samples: number }[];
         coverageDays: number; chartReady: boolean;
       };
@@ -111,7 +114,22 @@ if (TOKEN) {
       check('activity DAU ≤ WAU ≤ MAU', act.dau <= act.wau && act.wau <= act.mau, `${act.dau}/${act.wau}/${act.mau}`);
       // 0인 날도 행으로 와야 요일 평균이 맞는다(빠진 날을 표본 없음으로 두면 상향 편향).
       check('activity series가 0인 날을 메운다', act.series.length === 30, String(act.series.length));
+      // 신규 가입은 활성과 **같은 날짜 축**이어야 두 차트가 비교된다(한쪽이 UTC면 하루씩 어긋난다).
+      check(
+        'activity signups가 series와 같은 날짜 축',
+        act.signups.length === act.series.length && act.signups.every((r, i) => r.day === act.series[i].day),
+        `${act.signups.length} vs ${act.series.length}`,
+      );
     }
+
+    // 판정을 했다는 사실 자체를 내려보내야 화면이 "정상"과 "안 봤음"을 구분한다.
+    check('stats alertChecks 비지 않음', (s.alertChecks ?? []).length > 0, JSON.stringify(s.alertChecks));
+    // ⚠ infraEnv는 **env 이름**이지 값이 아니다. URL이 섮이면 그 순간 콘솔로 웹훅 시크릿이 새는 것이다.
+    check(
+      'stats infraEnv는 이름뿐 (값 미유출)',
+      Object.values(s.infraEnv ?? {}).every((v) => typeof v === 'string' && !/https?:\/\//.test(v)),
+      JSON.stringify(s.infraEnv),
+    );
 
     // ── subjects: 개인정보 최소 노출 ───────────────────────────────────────
     const ur = await get(`subjects?app=${app}&limit=1`, TOKEN);
