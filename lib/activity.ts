@@ -11,8 +11,11 @@ import { subjectActiveDay, subjects } from '../db/schema';
 import { ACTIVE_DAY_RETENTION_DAYS } from './retention';
 import {
   DAY_MS,
+  HOURS,
   SERIES_DAYS,
   WEEKDAY_WINDOW_DAYS,
+  hourBit,
+  hourChartReady,
   kstYmd,
   weekdayAverages,
   weekdayChartReady,
@@ -39,8 +42,17 @@ export * from './activityMath';
  */
 export async function recordActive(appCode: string, subjectId: string, now: Date = new Date()): Promise<void> {
   try {
+    const bit = hourBit(now);
     await Promise.all([
-      db.insert(subjectActiveDay).values({ appCode, subjectId, day: kstYmd(now) }).onConflictDoNothing(),
+      // 시각 비트를 OR로 얹는다 — 같은 시각에 몇 번을 켜도 결과가 같고(멱등), 도착 순서와도 무관하다.
+      // 그래서 하트비트가 세 곳(bootstrap·devices·login)이어도 하루 1행이 유지된다.
+      db
+        .insert(subjectActiveDay)
+        .values({ appCode, subjectId, day: kstYmd(now), hours: bit })
+        .onConflictDoUpdate({
+          target: [subjectActiveDay.appCode, subjectActiveDay.subjectId, subjectActiveDay.day],
+          set: { hours: sql`${subjectActiveDay.hours} | ${bit}` },
+        }),
       db.update(subjects).set({ lastSeenAt: now }).where(eq(subjects.id, subjectId)),
     ]);
   } catch {
@@ -70,6 +82,11 @@ export interface ActivitySummary {
    *  ⚠ 이건 하트비트와 무관하게 **처음부터 쌓여 있는** 값이다(subjects.createdAt) — 수집 개시일과 무관하다. */
   signups: { day: string; n: number }[];
   weekday: WeekdayBucket[];
+  /** KST 0~23시별 활성 **연인원**(주체×날짜). 창은 `series`와 같은 기간이다. */
+  hours: { hour: number; n: number }[];
+  /** 시각 비트를 실제로 모은 일수. **날짜 수집일과 다르다** — 시각은 2026-09-01부터 모은다. */
+  hourCoverageDays: number;
+  hourChartReady: boolean;
   /** 첫 기록일부터 오늘까지 며칠어치를 **모았나**. 0 = 수집 개시 전. */
   coverageDays: number;
   chartReady: boolean;
@@ -85,11 +102,12 @@ export interface ActivitySummary {
 export async function activitySummary(appCode: string, now: Date = new Date()): Promise<ActivitySummary> {
   const keys = windowDayKeys(WEEKDAY_WINDOW_DAYS, now);
   const from = keys[0];
+  const seriesFrom = keys[keys.length - SERIES_DAYS] ?? from; // 시간대 분포는 series와 같은 창을 쓴다
   const today = kstYmd(now);
   const wauFrom = kstYmd(new Date(now.getTime() - 6 * DAY_MS)); // 오늘 포함 7일
   const mauFrom = kstYmd(new Date(now.getTime() - 29 * DAY_MS));
 
-  const [daily, uniq, first, signup] = await Promise.all([
+  const [daily, uniq, first, signup, hourly, hourFirst] = await Promise.all([
     db
       .select({ day: subjectActiveDay.day, n: sql<number>`count(*)::int` })
       .from(subjectActiveDay)
@@ -120,20 +138,45 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
         ),
       )
       .groupBy(sql`1`),
+    // 시간대 분포 — generate_series로 비트를 펼친다. 24개 표현식을 손으로 쓰는 것보다
+    // 한 곳에서만 틀릴 수 있어 안전하고, 인덱스(app_code, day)도 그대로 탄다.
+    // 세는 단위는 **주체×날짜**(연인원)다: "그 시각에 활성이던 사람이 창 기간 동안 몇 번 있었나".
+    db.execute(sql`
+      select g.h::int as hour, count(*)::int as n
+      from ${subjectActiveDay} s, generate_series(0, 23) g(h)
+      where s.app_code = ${appCode} and s.day >= ${seriesFrom} and ((s.hours >> g.h) & 1) = 1
+      group by g.h
+    `),
+    // 시각 수집 개시일 — 날짜 수집일과 **다르다**. hours는 2026-09-01부터 쌓기 시작했고
+    // 그 이전 행은 0이라 히스토그램에 한 건도 기여하지 않는다(틀린 값 대신 없는 값).
+    db
+      .select({ first: sql<string | null>`min(${subjectActiveDay.day})` })
+      .from(subjectActiveDay)
+      .where(and(eq(subjectActiveDay.appCode, appCode), sql`${subjectActiveDay.hours} <> 0`)),
   ]);
 
   const per = new Map(daily.map((r) => [String(r.day).slice(0, 10), r.n]));
   const perSignup = new Map(signup.map((r) => [String(r.day).slice(0, 10), r.n]));
   const filled: [string, number][] = keys.map((k) => [k, per.get(k) ?? 0]);
 
-  // 수집 경과일 — 첫 기록일부터 오늘까지(첫날 포함). 한 행도 없으면 0.
-  const firstDay = first[0]?.first;
-  let coverageDays = 0;
-  if (firstDay) {
+  const perHour = new Map(
+    ((hourly as unknown as { rows?: { hour: number; n: number }[] }).rows ?? (hourly as unknown as { hour: number; n: number }[])).map(
+      (r) => [Number(r.hour), Number(r.n)],
+    ),
+  );
+
+  /** 'YYYY-MM-DD' → 오늘까지 며칠어치인가(첫날 포함). 없으면 0. */
+  const coverageFrom = (firstDay: string | null | undefined): number => {
+    if (!firstDay) return 0;
     const start = Date.parse(`${String(firstDay).slice(0, 10)}T00:00:00Z`);
     const end = Date.parse(`${today}T00:00:00Z`);
-    if (Number.isFinite(start) && Number.isFinite(end)) coverageDays = Math.floor((end - start) / DAY_MS) + 1;
-  }
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+    return Math.floor((end - start) / DAY_MS) + 1;
+  };
+
+  // 수집 경과일 — 첫 기록일부터 오늘까지(첫날 포함). 한 행도 없으면 0.
+  const coverageDays = coverageFrom(first[0]?.first);
+  const hourCov = coverageFrom(hourFirst[0]?.first);
 
   return {
     dau: per.get(today) ?? 0,
@@ -142,6 +185,9 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
     series: filled.slice(-SERIES_DAYS).map(([day, n]) => ({ day, n })),
     signups: keys.slice(-SERIES_DAYS).map((day) => ({ day, n: perSignup.get(day) ?? 0 })),
     weekday: weekdayAverages(filled),
+    hours: HOURS.map((hour) => ({ hour, n: perHour.get(hour) ?? 0 })),
+    hourCoverageDays: hourCov,
+    hourChartReady: hourChartReady(hourCov),
     coverageDays,
     chartReady: weekdayChartReady(coverageDays),
     windowDays: WEEKDAY_WINDOW_DAYS,

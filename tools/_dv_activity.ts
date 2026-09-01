@@ -9,8 +9,13 @@
 //   ③ 수집을 하루도 안 했는데 차트를 그리면 우연을 경향으로 읽는다
 import {
   DOW_LABEL,
+  HOURS,
+  HOUR_MIN_DAYS,
   MON_FIRST,
   dowOf,
+  hourBit,
+  hourChartReady,
+  kstHour,
   kstYmd,
   weekdayAverages,
   weekdayChartReady,
@@ -93,6 +98,31 @@ check(
   'samples가 꽉 차도 수집 0일이면 게이트가 막는다',
   full.every((w) => w.samples > 0) && weekdayChartReady(0) === false,
 );
+
+// ── ⑤ 시각 비트 (2026-09-01) ───────────────────────────────────────────────
+// 날짜를 접는 오프셋과 **같은 오프셋**을 써야 한다. 여기가 어긋나면 분포가 통째로 밀리는데,
+// 그래프는 멀쩡해 보이므로 아무도 눈치채지 못한다.
+{
+  const at = (iso: string) => new Date(iso);
+  check('KST 시각 — UTC 15:00 = 다음날 0시', kstHour(at('2026-09-01T15:00:00Z')) === 0);
+  check('KST 시각 — UTC 00:00 = 09시', kstHour(at('2026-09-01T00:00:00Z')) === 9);
+  check('KST 시각 — UTC 14:59 = 23시', kstHour(at('2026-09-01T14:59:00Z')) === 23);
+
+  // 자정 경계에서 날짜와 시각이 **같은 방향으로** 넘어가야 한다(하나만 넘어가면 하루가 어긋난다).
+  const edge = at('2026-09-01T15:00:00Z');
+  check('자정 경계: 날짜와 시각이 함께 넘어간다', kstYmd(edge) === '2026-09-02' && kstHour(edge) === 0);
+
+  check('비트는 시각의 거듭제곱', hourBit(at('2026-09-01T00:00:00Z')) === 1 << 9);
+  check('23시 비트가 int4 안에 든다', hourBit(at('2026-09-01T14:59:00Z')) === 8_388_608);
+  // OR이 멱등이라 같은 시각에 몇 번을 켜도 같은 값이다 — 하트비트가 세 곳인 이유가 여기 걸려 있다.
+  const b = hourBit(at('2026-09-01T03:00:00Z'));
+  check('같은 시각 OR은 멱등', (b | b) === b);
+  check('다른 시각 OR은 둘 다 남는다', (hourBit(at('2026-09-01T03:00:00Z')) | hourBit(at('2026-09-01T04:00:00Z'))) !== b);
+
+  check('HOURS는 0..23 24칸', HOURS.length === 24 && HOURS[0] === 0 && HOURS[23] === 23);
+  check('시각 차트: 수집 0일이면 안 그린다', hourChartReady(0) === false);
+  check(`시각 차트: 수집 ${HOUR_MIN_DAYS}일이면 그린다`, hourChartReady(HOUR_MIN_DAYS) === true);
+}
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

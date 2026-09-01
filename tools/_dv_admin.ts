@@ -83,6 +83,9 @@ if (TOKEN) {
         series: { day: string; n: number }[];
         signups: { day: string; n: number }[];
         weekday: { avg: number | null; samples: number }[];
+        hours: { hour: number; n: number }[];
+        hourCoverageDays: number;
+        hourChartReady: boolean;
         coverageDays: number; chartReady: boolean;
       };
     };
@@ -104,6 +107,23 @@ if (TOKEN) {
     if (act) {
       // 요일은 항상 7칸 — 표본이 없으면 칸을 빼는 게 아니라 avg가 null이다.
       check('activity weekday 7칸', act.weekday.length === 7, String(act.weekday.length));
+      check('activity hours 24칸', act.hours.length === 24, String(act.hours.length));
+      check(
+        'activity hours가 0..23 순서',
+        act.hours.every((h, i) => h.hour === i),
+        JSON.stringify(act.hours.map((h) => h.hour)),
+      );
+      // 시각 수집일은 **날짜 수집일과 별개 축**이다. 시각 비트는 나중에 붙었으므로 더 짧거나 같다.
+      check(
+        'activity 시각 수집일 ≤ 날짜 수집일',
+        act.hourCoverageDays <= act.coverageDays,
+        `${act.hourCoverageDays} / ${act.coverageDays}`,
+      );
+      check(
+        'activity 시각 수집 전엔 hourChartReady=false',
+        act.hourCoverageDays >= 3 || act.hourChartReady === false,
+        `coverage=${act.hourCoverageDays} ready=${act.hourChartReady}`,
+      );
       // 수집 전에 chartReady가 true면 화면이 우연을 경향으로 단언한다(배구 서버 실사고).
       check(
         'activity 수집 전엔 chartReady=false',

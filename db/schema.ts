@@ -252,6 +252,15 @@ export const subjectActiveDay = pgTable(
       .notNull()
       .references(() => subjects.id),
     day: text('day').notNull(), // KST 'YYYY-MM-DD'
+    // 그날 **몇 시에** 활성이었나 — KST 0~23시를 비트 24개로 접는다(비트 i = i시).
+    //
+    // 왜 `lastSeenAt`으로 안 되나: 그건 주체당 한 칸이라 **마지막 접속 시각**만 남는다.
+    // 그걸로 시간 분포를 그리면 "몇 시에 사람이 많나"가 아니라 "몇 시에 마지막으로 껐나"가 된다
+    // (배구 콘솔이 그 한계를 '마지막 접속 시각'이라고 이름에 적어두고 쓰는 것과 같은 사정).
+    //
+    // 왜 시각 행을 따로 안 쌓나: 그러면 하루에 주체당 최대 24행이 생긴다. 비트마스크는
+    // **행 수를 하루 1행으로 고정**하면서 같은 질문에 답한다 — OR이라 멱등이고 순서도 무관하다.
+    hours: integer('hours').notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.appCode, t.subjectId, t.day] }),

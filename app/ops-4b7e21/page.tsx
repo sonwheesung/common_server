@@ -128,6 +128,9 @@ type Stats = {
     series: { day: string; n: number }[];
     signups: { day: string; n: number }[];
     weekday: { dow: number; label: string; avg: number | null; samples: number }[];
+    hours: { hour: number; n: number }[];
+    hourCoverageDays: number;
+    hourChartReady: boolean;
     coverageDays: number;
     chartReady: boolean;
     windowDays: number;
@@ -1239,6 +1242,54 @@ function Activity({ a }: { a: Stats['activity'] }) {
         ) : (
           <p className="text-[13px] text-fg-muted">
             요일당 2일치(2주)는 모여야 그립니다. 그 전에 그리면 우연을 경향으로 읽게 됩니다.
+          </p>
+        )}
+      </div>
+
+      {/* 시간대 분포 — 공지 발행·점검 시각을 정할 때 실제로 쓰이는 지표.
+          ⚠ 날짜 수집일과 **다른 수집일**을 쓴다: 시각 비트는 2026-09-01부터 쌓기 시작했고,
+             그 이전 행은 0이라 히스토그램에 한 건도 기여하지 않는다(틀린 값 대신 없는 값). */}
+      <div className="mt-6 border-t border-border pt-5">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-[12px] font-medium text-fg-muted">시간대별 활성 (KST · 최근 {a.series.length}일)</p>
+          <span className="text-[11.5px] text-fg-muted">
+            {a.hourChartReady ? `수집 ${a.hourCoverageDays}일치` : <span className="text-warn">수집 중 {a.hourCoverageDays}/3일</span>}
+          </span>
+        </div>
+        {a.hourChartReady ? (
+          <>
+            <div className="flex h-20 items-stretch gap-[2px]">
+              {a.hours.map((h) => {
+                const hMax = Math.max(1, ...a.hours.map((x) => x.n));
+                return (
+                  <div
+                    key={h.hour}
+                    className="flex flex-1 flex-col justify-end"
+                    title={`${String(h.hour).padStart(2, '0')}시 · ${h.n}회`}
+                  >
+                    <div
+                      className={`rounded-t-[4px] ${h.n === 0 ? 'bg-border' : 'bg-accent/55'}`}
+                      style={{ height: h.n === 0 ? '2px' : `${Math.max((h.n / hMax) * 100, 8)}%` }}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            {/* 24칸에 눈금을 다 달면 읽히지 않는다 — 0·6·12·18·23만 */}
+            <div className="mt-1.5 flex justify-between text-[11px] text-fg-muted">
+              {[0, 6, 12, 18, 23].map((h) => (
+                <span key={h}>{h}시</span>
+              ))}
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-fg-muted">
+              세는 단위는 <strong className="font-medium text-fg">연인원</strong>입니다 — 같은 사람이 다른 날 같은 시각에
+              들어오면 2로 셉니다. &quot;그 시각에 사람이 있을 확률&quot;을 보는 지표이지 순 사용자 수가 아닙니다.
+            </p>
+          </>
+        ) : (
+          <p className="text-[13px] leading-relaxed text-fg-muted">
+            최소 3일치는 모여야 그립니다. 하루치를 패턴으로 읽으면 그날 우연히 몰린 시각이 생활패턴으로 둔갑합니다.
+            <br />※ 시각 기록은 2026-09-01부터 시작해서, 그 이전 날짜는 이 차트에 안 들어갑니다.
           </p>
         )}
       </div>

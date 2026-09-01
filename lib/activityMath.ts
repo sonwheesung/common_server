@@ -22,6 +22,22 @@ const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 export const kstYmd = (d: Date = new Date()): string =>
   new Date(d.getTime() + KST_OFFSET_MS).toISOString().slice(0, 10);
 
+/** UTC 시각 → KST 시(0~23). 날짜를 접는 것과 같은 오프셋을 쓴다 — 여기가 어긋나면 분포가 통째로 밀린다. */
+export const kstHour = (d: Date = new Date()): number => new Date(d.getTime() + KST_OFFSET_MS).getUTCHours();
+
+/** 그 시각 하나를 나타내는 비트. `hours` 컬럼에 OR로 얹는다(멱등 · 순서 무관). */
+export const hourBit = (d: Date = new Date()): number => 1 << kstHour(d);
+
+/** 시간대 차트를 그리기 시작하는 최소 수집일. 하루치를 패턴으로 읽으면
+ *  "그날 우연히 몰린 시각"이 생활패턴으로 둔갑한다. 요일차트의 2주 게이트와 같은 이유다. */
+export const HOUR_MIN_DAYS = 3;
+
+/** 시간대 차트를 그려도 되는가 — 판정 축은 **시각 비트를 모은 일수**다(날짜 수집일과 다르다). */
+export const hourChartReady = (hourCoverageDays: number): boolean => hourCoverageDays >= HOUR_MIN_DAYS;
+
+/** 표시 순서: 0시부터 23시까지. */
+export const HOURS: readonly number[] = Array.from({ length: 24 }, (_, i) => i);
+
 /** KST 달력일 'YYYY-MM-DD' → 요일(0=일 … 6=토).
  *  UTC 자정에 앵커해 읽는다 — 이미 KST로 접힌 날짜라 여기서 오프셋을 또 더하면 하루가 밀린다. */
 export const dowOf = (ymd: string): number => new Date(`${ymd}T00:00:00Z`).getUTCDay();
