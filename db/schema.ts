@@ -23,6 +23,17 @@ export const apps = pgTable('apps', {
   // 허용 엔타이틀먼트 키(콤마 구분). RC 대시보드의 오타가 유령 키를 만들지 않게 하는 **필터**다.
   // 상품→키 매핑이 아니다 — 매핑을 우리가 들면 RC의 attach 누락이 우리 매핑에 가려진다.
   entitlementKeys: text('entitlement_keys').notNull().default('pro'),
+  /**
+   * 콘솔 앱 선택 목록의 **표시 순서**. 작을수록 위. 2026-09-02.
+   *
+   * 종전엔 등록일 순이었다 — 그건 "언제 붙였나"이지 **"얼마나 자주 보나"가 아니다.**
+   * 앱이 늘수록 자주 보는 앱이 아래로 밀리고, 그건 순서를 바꿀 수단이 없어서 생기는 불편이다.
+   *
+   * ⚠ 기본값 0으로 시작하므로 **처음엔 전부 동률**이고, 그때는 이름순으로 떨어진다(2차 정렬).
+   * 등록일을 2차로 두지 않은 이유: 동률일 때 순서가 **눈에 보이는 값으로 설명돼야** 하기 때문이다.
+   * 이름은 화면에 있고 등록일은 없다 — 안 보이는 값으로 정렬하면 "왜 이 순서지"에 답할 수 없다.
+   */
+  sortOrder: integer('sort_order').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -205,6 +205,93 @@ if (TOKEN) {
   skip('admin-happy-path', 'ADMIN_TOKEN 을 주면 검증');
 }
 
+// ── 앱 목록 표시 순서 (2026-09-02) ──────────────────────────────────────────
+// 종전엔 appCode 알파벳순이라 운영자가 바꿀 수 없었다. sortOrder 로 바꾸고 동률은 이름순이다.
+// 🔴 sortOrder 는 **0이 유효한 값**이라 `if (b.sortOrder)` 로 받으면 0으로 되돌리기가 불가능해진다 —
+//    그 함정을 여기서 못박는다(오늘 하루 나온 "안 도는데 초록"의 사촌: 되돌리기가 조용히 무시된다).
+if (TOKEN) {
+  const j = (await (await get('apps', TOKEN)).json()) as { apps?: { appCode: string; name: string; sortOrder?: number }[] };
+  const list = j.apps ?? [];
+  check('apps 목록에 sortOrder 가 온다', list.every((a) => typeof a.sortOrder === 'number'),
+    JSON.stringify(list.map((a) => [a.appCode, a.sortOrder])));
+
+  // 서버가 sortOrder 오름차순으로 주는가 — 화면이 다시 정렬하지 않으므로 여기가 유일한 보증이다.
+  //
+  // ⚠ **동률의 이름순은 여기서 검증하지 않는다.** 처음엔 JS `localeCompare` 로 대조했다가 FAIL 이
+  //   났는데, **틀린 건 서버가 아니라 이 가드였다**:
+  //     서버(Postgres)  Idea Repository, LinkMemo, My Word, 조각   ← 라틴 먼저(코드포인트)
+  //     JS localeCompare 조각, Idea Repository, LinkMemo, My Word   ← 한글 먼저
+  //   정렬 규칙(collation)이 DB와 JS 에서 다르다. 가드가 **다른 규칙으로 재현한 기대값**을
+  //   정답처럼 쓰면 멀쩡한 서버를 고치게 된다 — 오늘 대비 사고와 같은 형태다(오라클이 틀렸다).
+  //   → 계약으로서 의미 있는 축(**운영자가 정하는 sortOrder**)만 못박고, 동률 순서는 DB 에 맡긴다.
+  const orders = list.map((a) => a.sortOrder ?? 0);
+  check('apps 는 sortOrder 오름차순으로 온다', orders.every((v, i) => i === 0 || v >= orders[i - 1]),
+    `순서=${list.map((a) => `${a.appCode}:${a.sortOrder}`).join(' ')}`);
+
+  const target = list[0];
+  if (!target) {
+    skip('apps-sort-order', '등록된 앱 없음');
+  } else {
+    const orig = target.sortOrder ?? 0;
+    const patchSort = async (v: number) =>
+      (await (await patch('apps', TOKEN, { appCode: target.appCode, sortOrder: v })).json()) as { app?: { sortOrder?: number } };
+
+    const up = await patchSort(7);
+    check('sortOrder PATCH 가 반영된다', up.app?.sortOrder === 7, `v=${up.app?.sortOrder}`);
+
+    // 🔴 0으로 되돌리기 — falsy 라 무시되면 여기서 걸린다
+    const zero = await patchSort(0);
+    check('sortOrder 0 으로 되돌릴 수 있다 (falsy 함정)', zero.app?.sortOrder === 0, `v=${zero.app?.sortOrder}`);
+
+    // 음수 허용 — "맨 위로"를 표현하는 자연스러운 방법이다
+    const neg = await patchSort(-1);
+    check('sortOrder 음수 허용', neg.app?.sortOrder === -1, `v=${neg.app?.sortOrder}`);
+
+    await patchSort(orig); // 원상복구 — 가드가 운영 데이터를 바꿔놓고 끝나지 않는다
+    const back = (await (await get('apps', TOKEN)).json()) as { apps?: { appCode: string; sortOrder?: number }[] };
+    check('가드가 바꾼 값을 되돌렸다',
+      (back.apps ?? []).find((a) => a.appCode === target.appCode)?.sortOrder === orig);
+  }
+}
+
+// ── 사용자 목록 정렬 기본값 (2026-09-02) ────────────────────────────────────
+// 기본값을 **서버와 화면 둘 다** seen 으로 맞췄다. 한쪽만 바꾸면 콘솔과 curl 이 다른 순서를
+// 보여주고, 그건 "화면이 이상한가 데이터가 이상한가"를 가릴 수 없게 만드는 종류의 불일치다.
+// ⚠ 여기서 화면 코드를 읽지는 못한다 — 서버 기본값만 못박고, 화면 쪽은 같은 값이라는 걸
+//   양쪽 주석에 적어 뒀다(가드로 못 잡는 자리는 그렇게 표시한다).
+if (TOKEN) {
+  const ar = await get('apps', TOKEN);
+  const aj = (await ar.json()) as { apps?: { appCode: string }[] };
+  const code = (aj.apps ?? [])[0]?.appCode;
+  if (!code) {
+    skip('subjects-sort', '등록된 앱 없음');
+  } else {
+    const base = (await (await get(`subjects?app=${code}`, TOKEN)).json()) as { sort?: string };
+    check('subjects 정렬 기본값은 seen (지금 누가 쓰나)', base.sort === 'seen', `sort=${base.sort}`);
+
+    const asked = (await (await get(`subjects?app=${code}&sort=created`, TOKEN)).json()) as { sort?: string };
+    check('subjects sort=created 는 그대로 존중', asked.sort === 'created', `sort=${asked.sort}`);
+
+    // 모르는 값이 오면 **기본값으로 떨어진다**. 오타가 조용히 다른 정렬을 만들면 안 된다.
+    const junk = (await (await get(`subjects?app=${code}&sort=__nope__`, TOKEN)).json()) as { sort?: string };
+    check('subjects 모르는 sort 는 기본값(seen)으로', junk.sort === 'seen', `sort=${junk.sort}`);
+
+    // 🔴 seen 정렬은 lastSeenAt 이 null 인 사람을 **맨 뒤**로 보낸다.
+    //    앞으로 오면 "가장 오래된 사람"으로 오독된다(구버전 사용자가 목록 최상단에 뜬다).
+    const rows = (await (await get(`subjects?app=${code}&sort=seen&limit=50`, TOKEN)).json()) as {
+      subjects?: { lastSeenAt: string | null }[];
+    };
+    const list = rows.subjects ?? [];
+    const firstNull = list.findIndex((r) => r.lastSeenAt === null);
+    const lastNonNull = list.map((r) => r.lastSeenAt !== null).lastIndexOf(true);
+    check(
+      'seen 정렬: 접속 기록 없는 사람이 뒤에 온다 (nulls last)',
+      firstNull === -1 || firstNull > lastNonNull,
+      `firstNull=${firstNull} lastNonNull=${lastNonNull} n=${list.length}`,
+    );
+  }
+}
+
 // ── 주체 2행 구조 판정 (2026-09-02) ─────────────────────────────────────────
 // 로그인 앱이 비로그인 활성을 재려고 기기 주체를 따로 두면 로그인한 사람은 device 1 + user 1 로
 // **영구히 2행**이 된다(병합 개념 없음). 그 앱의 누적 `사용자` 수는 부풀어 있으므로 앱끼리
@@ -329,7 +416,7 @@ if (TOKEN) {
 //
 // ⚠ 여기 이름들은 **환경 조건부**라 안 도는 게 정상인 것들이다(고장난 것이 아니다).
 //   새 스킵을 추가하면 이 목록에도 등록해야 하고, **등록을 잊으면 여기서 걸린다** — 그게 요점이다.
-const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 'admin-happy-path', 'dual-count', 'warm-boundary'];
+const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 'admin-happy-path', 'dual-count', 'warm-boundary', 'subjects-sort', 'apps-sort-order'];
 {
   const unknown = skipped.filter((n) => !KNOWN_SKIPS.includes(n));
   if (unknown.length > 0) {
@@ -350,7 +437,7 @@ const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다 —
 //   안 올리면 다음에 섹션이 하나 죽어도 바닥에 안 걸린다.
 // 사유: ADMIN_TOKEN 이 없으면 대부분 스킵된다 — 그때 걸리는 게 맞다
-const MIN_CHECKS = 60; // 2026-09-02: 웜 경계 5×앱 추가
+const MIN_CHECKS = 70; // 2026-09-02: 웜 경계 5×앱 · 사용자 정렬 4 · 앱 순서 6
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {

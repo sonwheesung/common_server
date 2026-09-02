@@ -49,9 +49,10 @@ import {
   Users,
   Wrench,
   X,
+  ChevronDown,
 } from 'lucide-react';
 
-type App = { appCode: string; name: string; active: boolean; ticketDailyCap: number };
+type App = { appCode: string; name: string; active: boolean; ticketDailyCap: number; sortOrder: number };
 type Settings = {
   appCode: string;
   minVersion: string | null;
@@ -363,8 +364,13 @@ function urlState(): { tab: Tab; app: string } {
 
 // 회색 배경 위에 흰 카드가 얕게 떠 보이도록 — 테두리 하나로만 구분하면 밀도가 높을 때 답답해진다
 const card = 'rounded-card border border-border bg-surface shadow-[0_1px_2px_rgba(0,0,0,0.04)]';
-const field =
-  'w-full rounded-lg border border-border bg-surface px-3 text-[13.5px] placeholder:text-fg-muted/55 transition-colors focus:border-accent';
+/** 폭을 뺀 공통 필드 모양. **폭은 호출부가 정한다** —
+ *  ⚠ Tailwind는 클래스 **속성 순서로 이기지 않는다**. `w-full`이 박힌 문자열 뒤에 `w-auto`를
+ *  붙여도 어느 쪽이 이길지는 생성된 CSS 순서가 정하지, 내가 쓴 순서가 정하지 않는다.
+ *  그래서 폭을 기본값에 넣어두면 "덮어썼다고 믿는데 안 덮이는" 버그가 조용히 생긴다. */
+const fieldBase =
+  'rounded-lg border border-border bg-surface px-3 text-[13.5px] placeholder:text-fg-muted/55 transition-colors focus:border-accent';
+const field = `w-full ${fieldBase}`;
 // 한 줄 입력은 **높이를 padding으로 만들지 않는다**. 폰트별 line-height 차이 때문에 py-2로는
 // 옆에 선 h-9 버튼과 1~2px씩 어긋난다. Button과 같은 h-9를 쓰면 한 줄에 나열해도 딱 맞는다.
 const input = `${field} h-9`;
@@ -388,6 +394,42 @@ function Button({
     danger: 'border border-danger/25 text-danger hover:bg-danger-soft',
   };
   return <button className={`${base} ${variants[variant]} ${className}`} {...props} />;
+}
+
+/**
+ * 셀렉트 — **네이티브 `<select>`를 그대로 쓰지 않는다.**
+ *
+ * 브라우저가 그리는 화살표·높이·글꼴이 OS마다 달라서, 한 줄에 다른 컨트롤과 나란히 두면
+ * **반드시 어긋난다**(2026-09-02 사용자 지적: "카테고리·select 등 디자인·텍스트 크기·색상 다 안 맞아").
+ * 실제로 이 화면에 셀렉트가 6개 있었는데 클래스가 **4가지**였다 — px가 2.5/3, 글꼴이 13/13.5,
+ * 배경이 bg-bg/bg-surface로 제각각이었다.
+ *
+ * `appearance-none`으로 브라우저 화살표를 끄고 아이콘을 직접 얹는다. 아이콘은 `currentColor`를
+ * 따르므로 **다크 모드가 저절로 맞는다** — data-URI SVG로 넣으면 색을 하드코딩하게 되어 안 맞는다.
+ */
+function Select({
+  className = '',
+  children,
+  ...props
+}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  // 폭은 호출부가 준 클래스에서 읽는다. `w-full`이면 컨테이너도 같이 늘려야 화살표가 오른쪽 끝에 붙는다
+  // (컨테이너가 inline-flex면 셀렉트만 늘고 화살표가 따라오지 않는다).
+  const full = /\bw-full\b/.test(className);
+  return (
+    <div className={`relative ${full ? 'w-full' : 'inline-flex'}`}>
+      {/* pr-8 — 화살표 자리를 비워 둔다. 안 비우면 긴 옵션에서 글자가 아이콘 밑으로 들어간다 */}
+      {/* ⚠ `input`이 아니라 `fieldBase`를 쓴다 — input에는 `w-full`이 박혀 있고,
+          Tailwind는 **클래스 속성 순서로 이기지 않으므로** 뒤에 `w-auto`를 붙여도 안 덮인다.
+          "덮어썼다고 믿는데 안 덮이는" 버그가 조용히 생기는 자리다. */}
+      <select
+        className={`${fieldBase} h-9 appearance-none pr-8 ${full ? 'w-full' : 'w-auto'} ${className}`}
+        {...props}
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fg-muted" />
+    </div>
+  );
 }
 
 function Badge({
@@ -499,7 +541,9 @@ function Segmented<T extends string>({
         <button
           key={v}
           onClick={() => onChange(v)}
-          className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
+          // 글꼴을 field/input(13.5px)과 맞춘다 — 한 줄에 나란히 서는 컨트롤들이 다른 크기면
+          // "디자인이 안 맞는다"로 곧장 보인다(2026-09-02 사용자 지적).
+          className={`rounded-md px-3 py-1.5 text-[13.5px] transition-colors ${
             value === v ? 'bg-accent-strong text-accent-fg font-medium' : 'text-fg-muted hover:text-fg'
           }`}
         >
@@ -866,10 +910,10 @@ export default function Ops() {
         {/* 앱 선택 — 배구 콘솔엔 없는 요소(저쪽은 PROJ_CODE 고정). 모든 화면이 이 선택에 종속된다 */}
         <label className="mt-5 block">
           <span className="mb-1.5 block px-1 text-[10.5px] font-bold uppercase tracking-[0.08em] text-fg-muted/65">앱</span>
-          <select
+          <Select
             value={appCode}
             onChange={(e) => navigate({ app: e.target.value })}
-            className="h-9 w-full rounded-lg border border-border bg-bg px-2.5 text-[13.5px] font-medium"
+            className="w-full bg-bg font-medium"
           >
             {apps.length === 0 && <option value="">— 없음 —</option>}
             {apps.map((a) => (
@@ -877,7 +921,7 @@ export default function Ops() {
                 {a.name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
 
         <nav className="mt-6 flex flex-1 flex-col gap-0.5">
@@ -1620,15 +1664,15 @@ function AnnFields({ value, onChange }: { value: AnnDraft; onChange: (v: AnnDraf
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        <select
+        <Select
           value={value.kind}
           onChange={(e) => onChange({ ...value, kind: e.target.value })}
-          className="h-9 rounded-lg border border-border bg-surface px-3 text-[13px]"
+          className="w-auto"
         >
           <option value="notice">공지</option>
           <option value="event">이벤트</option>
           <option value="update">업데이트</option>
-        </select>
+        </Select>
         <input
           placeholder="제목"
           value={value.title}
@@ -1957,21 +2001,21 @@ function Tickets({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className={`${input} w-auto min-w-32`}>
+        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-auto min-w-32">
           {TICKET_STATUS_FILTERS.map(([v, label]) => (
             <option key={v} value={v}>
               {label}
             </option>
           ))}
-        </select>
-        <select value={category} onChange={(e) => setCategory(e.target.value)} className={`${input} w-auto min-w-28`}>
+        </Select>
+        <Select value={category} onChange={(e) => setCategory(e.target.value)} className="w-auto min-w-28">
           <option value="">전체 유형</option>
           {Object.entries(CATEGORY_KO).map(([v, label]) => (
             <option key={v} value={v}>
               {label}
             </option>
           ))}
-        </select>
+        </Select>
         <span className="text-[12px] text-fg-muted">
           {filtered.length} / {rows.length}건
         </span>
@@ -2172,13 +2216,13 @@ function TicketModal({
       </Field>
 
       <Field label="상태" hint="저장을 눌러야 반영됩니다. 답변을 쓰지 않고 상태만 바꿔도 됩니다.">
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className={input}>
+        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full">
           {STATUS_OPTIONS.map(([v, label]) => (
             <option key={v} value={v}>
               {label}
             </option>
           ))}
-        </select>
+        </Select>
       </Field>
 
       {dirty && <p className="text-[12px] text-warn">저장하지 않은 내용이 있습니다</p>}
@@ -2331,7 +2375,9 @@ function ActivityHeatmap({ data }: { data: HeatData }) {
 function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onError: (m: string) => void }) {
   const [status, setStatus] = useState<'all' | 'active' | 'inactive' | 'withdrawn'>('all');
   // 정렬 축 — 묻는 질문이 다르다: 가입일은 "누가 새로 왔나", 접속일은 "누가 지금 쓰고 있나".
-  const [sort, setSort] = useState<'created' | 'seen'>('created');
+  //   기본값 seen — 이 화면을 여는 이유가 대개 "지금 누가 쓰나"다(2026-09-02 사용자 요청).
+  //   ⚠ 서버 기본값도 같이 seen이다. 한쪽만 바꾸면 콘솔과 curl이 다른 순서를 보여준다.
+  const [sort, setSort] = useState<'created' | 'seen'>('seen');
   const [offset, setOffset] = useState(0);
   // 잔디 모달. id만 들고 있고 데이터는 열 때 따로 받는다 — 목록 50행마다 미리 받으면 낭비다.
   const [heatId, setHeatId] = useState<string | null>(null);
@@ -2390,21 +2436,22 @@ function Subjects({ api, appCode, onError }: { api: Api; appCode: string; onErro
             ['withdrawn', '탈퇴'],
           ]}
         />
-        <label className="flex items-center gap-1.5 text-[12px] text-fg-muted">
+        <label className="flex items-center gap-1.5 text-[12.5px] text-fg-muted">
           정렬
-          <select
+          <Select
             value={sort}
             onChange={(e) => {
               setSort(e.target.value as 'created' | 'seen');
               setOffset(0); // 정렬을 바꾸면 1페이지로 — 안 그러면 다른 축의 offset이 엉뚱한 구간을 연다
             }}
-            className="h-9 rounded-lg border border-border bg-surface px-2.5 text-[13px] text-fg"
+            className="w-auto"
           >
-            <option value="created">가입일 최신순</option>
+            {/* 기본값을 위에 둔다 — 목록 첫 항목이 곧 지금 적용된 값이라고 읽히기 때문이다 */}
             <option value="seen">최근 접속순</option>
-          </select>
+            <option value="created">가입일 최신순</option>
+          </Select>
         </label>
-        <span className="text-[12px] text-fg-muted">
+        <span className="text-[12.5px] text-fg-muted">
           {total.toLocaleString()}명 · 활성 기준 최근 {activeDays}일 접속
           {sort === 'seen' && <span className="text-fg-muted/70"> · 접속 기록 없는 사용자는 맨 뒤</span>}
         </span>
@@ -3119,6 +3166,23 @@ function AppsTab({ api, apps, reload, onError, flash }: Common & { apps: App[] }
           </div>
 
           <label className="flex items-center gap-2 text-sm">
+            {/* 표시 순서 — 작을수록 위. 동률이면 이름순으로 떨어진다(서버 orderBy와 같은 규칙).
+                ⚠ 위/아래 버튼 대신 숫자를 직접 둔 이유: 앱이 4개뿐이라 스왑 로직을 만들 값이
+                   아니고, 숫자가 보이면 "왜 이 순서인지"가 화면에서 바로 설명된다. */}
+            <span className="text-fg-muted">순서</span>
+            <input
+              type="number"
+              defaultValue={a.sortOrder}
+              className="w-16 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm"
+              title="작을수록 위. 같으면 이름순입니다."
+              onBlur={(e) =>
+                Number(e.target.value) !== a.sortOrder &&
+                patch(a.appCode, { sortOrder: Number(e.target.value) }, '표시 순서를 변경했습니다')
+              }
+            />
+          </label>
+
+          <label className="flex items-center gap-2 text-[13px]">
             <span className="text-fg-muted">24h 캡</span>
             <input
               type="number"

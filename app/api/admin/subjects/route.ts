@@ -40,7 +40,11 @@ export async function GET(req: Request) {
     //   묻는 질문이 다르다: created는 "누가 새로 왔나", seen은 "누가 지금 쓰고 있나".
     //   ⚠ seen은 lastSeenAt이 null인 사람(한 번도 하트비트가 안 붙은 구버전 사용자)을
     //   맨 뒤로 보낸다 — nulls last. 앞으로 오면 "가장 오래된 사람"으로 오독된다.
-    const sort = q.get('sort') === 'seen' ? 'seen' : 'created';
+    //   **기본값은 seen이다**(2026-09-02). 운영에서 이 화면을 여는 이유가 대개 "지금 누가 쓰나"이지
+    //   "누가 가입했나"가 아니다. 가입 순은 신규 추이 차트가 이미 답하고 있다.
+    //   ⚠ 화면 기본값과 **같은 값**으로 맞춘다 — 어긋나면 콘솔과 curl이 다른 순서를 보여주고,
+    //   그건 디버깅할 때 가장 헷갈리는 종류의 불일치다.
+    const sort = q.get('sort') === 'created' ? 'created' : 'seen';
     const orderBy =
       sort === 'seen' ? sql`${subjects.lastSeenAt} desc nulls last` : desc(subjects.createdAt);
     const limit = num(q.get('limit'), 50, MAX_LIMIT) || 50;
