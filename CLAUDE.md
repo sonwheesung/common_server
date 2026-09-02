@@ -97,7 +97,16 @@ BASE_URL=... node tools/_dv_auth.ts                          # 로그인·세션
 BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서버 계약과 맞는지
 node tools/_dv_purchase.ts                                   # 결제 판정·상태전이(DB 불필요). BASE_URL 주면 라우트도
 node tools/_dv_activity.ts                                   # 활성 집계 순수함수(DB 불필요)
+
+BASE_URL=... node tools/_e2e_heartbeat.ts                    # ⚠ 하트비트 성공 경로 — 행을 만들고 끝에 지운다
 ```
+
+⚠ `_dv_purchase.ts`의 "RC 키 없으면 no-op" 항목은 **env에 `RC_SECRET_API_KEY_*`가 있으면 실패한다**(전제가 성립하지 않으므로).
+`.env.local`을 source한 셸에서 돌릴 땐 `env -u RC_SECRET_API_KEY_JOGAK`로 뺀다.
+
+⚠ `_e2e_heartbeat.ts`만 **가드가 아니다** — 상시 실행용이 아니라 성공 경로 1회 확인용이고,
+`subjects`·`subject_active_day`에 **실제 행을 만든다**(끝에서 지운다). 로컬 dev가 프로덕션 DB를 쓰므로
+상시 가드에 넣으면 돌릴 때마다 `사용자` 수와 DAU가 조용히 부푼다.
 
 `tools/*.ts`는 Node 22의 타입 스트리핑으로 `node`가 직접 실행한다(tsx 불필요).
 

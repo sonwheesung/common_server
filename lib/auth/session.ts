@@ -62,13 +62,24 @@ export interface SessionClaims {
 export interface VerifiedSession extends SessionClaims {
   /** 발급 시각(ms). 서명 안에 있는 값이라 위조할 수 없다. */
   iat: number;
+  /** 만료 시각(ms). 토큰에 `exp`가 없는 기발급분이면 `iat + TOKEN_TTL_MS`로 채운다. */
+  exp: number;
 }
 
-/** 세션 토큰 발급. 시크릿이 없으면 null(fail-closed). */
+/**
+ * 세션 토큰 발급. 시크릿이 없으면 null(fail-closed).
+ *
+ * **`exp`를 싣는다**(2026-09-02). 종전엔 만료 기준이 서버(`TOKEN_TTL_MS`)와 SDK(`SESSION_TTL_DAYS`)에
+ * **복제**돼 있었다. 값이 같아 무해했지만, 누가 서버만 바꾸면 앱은 모른 채 다른 기준으로 판정한다 —
+ * 어긋나는 순간이 오면 "앱은 살아있다는데 서버는 401"이거나 그 반대가 되고, 둘 다 조용하다.
+ * 토큰이 자기 만료를 들고 다니면 **서버가 유일한 진실**이 되고, TTL을 바꿔도 다음 갱신(최대 30일)에
+ * 자동 전파된다 — 앱 재배포가 필요 없다.
+ */
 export function signSession(claims: SessionClaims): string | null {
   const key = secret();
   if (!key) return null;
-  const body = b64(JSON.stringify({ ...claims, iat: Date.now() }));
+  const iat = Date.now();
+  const body = b64(JSON.stringify({ ...claims, iat, exp: iat + TOKEN_TTL_MS }));
   return `${body}.${hmac(body, key)}`;
 }
 
@@ -87,8 +98,13 @@ export function verifySession(token: string): VerifiedSession | null {
   try {
     const p = JSON.parse(Buffer.from(body, 'base64url').toString());
     if (typeof p.sid !== 'string' || typeof p.app !== 'string') return null;
-    if (typeof p.iat !== 'number' || Date.now() - p.iat > TOKEN_TTL_MS) return null;
-    return { sid: p.sid, app: p.app, iat: p.iat };
+    if (typeof p.iat !== 'number') return null;
+    // 만료는 **토큰이 들고 온 exp**로 본다. 없으면 `exp` 도입(2026-09-02) 이전에 발급된 토큰이므로
+    // 옛 규칙(iat + TTL)으로 폴백한다 — 그게 없으면 기존 사용자가 전부 한 번에 로그아웃된다.
+    // ⚠ exp도 서명 안에 있으므로 위조할 수 없다. 클라이언트가 보내는 값이 아니다.
+    const exp = typeof p.exp === 'number' ? p.exp : p.iat + TOKEN_TTL_MS;
+    if (Date.now() >= exp) return null;
+    return { sid: p.sid, app: p.app, iat: p.iat, exp };
   } catch {
     return null;
   }

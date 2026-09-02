@@ -17,6 +17,11 @@ export const LIMITS = {
   bootstrap: { limit: 60, windowSec: 60 }, // 부팅 조회: 60회/60초 (IP) — 읽기라 넉넉히
   login: { limit: 20, windowSec: 60 }, // 로그인: 20회/60초 (IP) — 토큰 검증은 외부 왕복이라 남용 시 비용이 든다
   device: { limit: 10, windowSec: 600 }, // 기기 등록: 10회/600초 (IP) — 정상 앱은 평생 1회면 된다. subject 행 스팸 방지
+  // 활성 하트비트: 60회/60초 (IP) — 앱 쪽 쿨다운이 5분이라 정상 사용자는 여기 근처도 못 온다.
+  // ⚠ 넉넉히 잡는 이유는 **IP가 사용자 단위가 아니기** 때문이다 — 학교·사무실 NAT 뒤에서 수십 명이
+  //   같은 키를 쓴다. 좁게 잡으면 공격자가 아니라 그 사람들이 막힌다(그리고 fail-open이라 어차피
+  //   방어선이 아니다 — 이 라우트의 진짜 방어는 **유효한 세션 토큰**이다).
+  heartbeat: { limit: 60, windowSec: 60 },
 } as const;
 
 export type LimiterName = keyof typeof LIMITS;
@@ -44,7 +49,13 @@ function getLimiters(): Record<LimiterName, RatelimitLike> | null {
         prefix: `rl:${name}`,
         limiter: Ratelimit.slidingWindow(LIMITS[name].limit, `${LIMITS[name].windowSec} s`),
       });
-    cachedLimiters = { ticket: make('ticket'), bootstrap: make('bootstrap'), login: make('login'), device: make('device') };
+    cachedLimiters = {
+      ticket: make('ticket'),
+      bootstrap: make('bootstrap'),
+      login: make('login'),
+      device: make('device'),
+      heartbeat: make('heartbeat'),
+    };
     return cachedLimiters;
   } catch (e) {
     reportError(e, 'ratelimit/init');

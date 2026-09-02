@@ -131,5 +131,51 @@ const FORGED = 'eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJmYWtlIiwiYXBwIjoibXl3b3JkIiwiaWF
   }
 }
 
+// ── exp 클레임 (2026-09-02) ──────────────────────────────────────────────────
+// 만료 기준을 서버 한 곳으로 모았다. 종전엔 서버 TOKEN_TTL_MS 와 SDK SESSION_TTL_DAYS 에
+// **복제**돼 있어서, 누가 서버만 바꾸면 조용히 갈라졌다(그리고 양쪽 다 조용히 틀린다).
+{
+  const { signSession, verifySession, TOKEN_TTL_MS } = await import('../lib/auth/session.ts');
+
+  const tok = signSession({ sid: '00000000-0000-4000-8000-000000000000', app: APP });
+  if (!tok) {
+    check('exp: 시크릿이 있어야 이 절을 검증한다 (SESSION_JWT_SECRET 미설정)', false, 'signSession → null');
+  } else {
+    const payload = JSON.parse(Buffer.from(tok.slice(0, tok.indexOf('.')), 'base64url').toString()) as {
+      iat: number;
+      exp?: number;
+    };
+    check('exp: 새 토큰은 exp 를 싣는다', typeof payload.exp === 'number', `exp=${payload.exp}`);
+    check('exp: exp = iat + TOKEN_TTL_MS', payload.exp === payload.iat + TOKEN_TTL_MS);
+
+    const v = verifySession(tok);
+    check('exp: 검증 결과에 exp 가 실려 나온다', v?.exp === payload.exp);
+    check('exp: iat 도 그대로 (슬라이딩 갱신 판정용)', v?.iat === payload.iat);
+  }
+
+  // 🔴 기발급분 호환 — exp 가 없는 옛 토큰이 **여전히 통과해야 한다**.
+  //    안 그러면 이 배포 순간 기존 사용자가 전부 로그아웃되고, bootstrap 은 그걸 조용히 무시하므로
+  //    그 사용자들은 DAU 에서 통째로 사라진다(아무도 모르게).
+  {
+    const { verifySession } = await import('../lib/auth/session.ts');
+    const crypto = await import('node:crypto');
+    const key = process.env.SESSION_JWT_SECRET ?? '';
+    if (key.length >= 32) {
+      const legacy = (iatOffsetMs: number) => {
+        const body = Buffer.from(
+          JSON.stringify({ sid: '00000000-0000-4000-8000-000000000000', app: APP, iat: Date.now() - iatOffsetMs }),
+        ).toString('base64url');
+        const sig = crypto.createHmac('sha256', key).update(body).digest('base64url');
+        return `${body}.${sig}`;
+      };
+      const DAY = 86_400_000;
+      check('exp: 없는 옛 토큰도 통과 (iat 폴백)', verifySession(legacy(10 * DAY)) !== null);
+      check('exp: 없는 옛 토큰이 TTL 을 넘겼으면 거부', verifySession(legacy(181 * DAY)) === null);
+    } else {
+      console.log('  SKIP  exp 폴백 — SESSION_JWT_SECRET 미설정(로컬)');
+    }
+  }
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

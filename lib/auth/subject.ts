@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../db';
 import { appAuthProviders, subjects, type Subject } from '../../db/schema';
-import { sessionFromRequest } from './session';
+import { sessionFromRequest, type VerifiedSession } from './session';
 
 /** 앱의 공급자 설정(활성 + audience 목록). 없거나 꺼져 있으면 null → 로그인 거부. */
 export async function providerConfig(appCode: string, provider: string): Promise<string[] | null> {
@@ -63,6 +63,12 @@ export async function ensureDeviceSubject(appCode: string, deviceId: string): Pr
 
 export interface Authed {
   subject: Subject;
+  /**
+   * 검증된 토큰 자체(`iat`·`exp` 포함). 2026-09-02 추가 — 슬라이딩 갱신 판정에 발급 시각이 필요한데,
+   * 라우트가 토큰을 **다시 파싱**하면 검증이 두 번 일어나고 판정 기준이 갈릴 자리가 생긴다.
+   * 필드 추가라 기존 호출부(`const { subject } = authed`)는 그대로 동작한다(Expand-only).
+   */
+  session: VerifiedSession;
 }
 
 /**
@@ -78,7 +84,7 @@ export async function requireSubject(req: Request): Promise<Authed | null> {
   const s = rows[0];
   if (!s || s.deletedAt) return null; // 탈퇴한 주체의 옛 토큰으로 부활시키지 않는다
   if (s.appCode !== claims.app) return null;
-  return { subject: s };
+  return { subject: s, session: claims };
 }
 
 /**

@@ -92,5 +92,34 @@ if (process.env.CREATE === '1') {
   console.log('  SKIP  tickets 접수 성공 경로 (CREATE=1 로 실행하면 실제 행을 만든다)');
 }
 
+// ── 하트비트 (2026-09-02) ────────────────────────────────────────────────────
+// ⚠ bootstrap 과 **의도적으로 반대**다. bootstrap 은 무효 토큰을 조용히 무시하고 200 을 준다
+//   (진입 게이트라 세션 만료가 점검·강제업데이트 판정을 막으면 안 되기 때문).
+//   하트비트는 감시할 게이트가 없고 관측이 유일한 임무라, 토큰이 죽었으면 **401 로 알려줘야**
+//   앱이 다음 부팅에 재등록한다(자가 치유). 이 비대칭을 여기서 못박는다.
+{
+  const hb = (init?: RequestInit) => fetch(`${BASE}/api/v1/heartbeat`, { method: 'POST', ...init });
+
+  const r1 = await hb();
+  check('heartbeat 토큰 없으면 401', r1.status === 401, `status=${r1.status}`);
+
+  const r2 = await hb({ headers: { authorization: 'Bearer not-a-real-token' } });
+  check('heartbeat 무효 토큰 401 (bootstrap 과 반대)', r2.status === 401, `status=${r2.status}`);
+
+  // 서명이 우리 형식이지만 가짜인 토큰 — 파싱은 되고 검증에서 떨어져야 한다
+  const forged = `${Buffer.from(JSON.stringify({ sid: '00000000-0000-4000-8000-000000000000', app: APP, iat: Date.now(), exp: Date.now() + 1000 })).toString('base64url')}.bm90LWEtcmVhbC1zaWduYXR1cmU`;
+  const r3 = await hb({ headers: { authorization: `Bearer ${forged}` } });
+  check('heartbeat 위조 서명 401', r3.status === 401, `status=${r3.status}`);
+
+  // GET 은 라우트가 없다 — 관측이 쓰기라 POST 만 연다(프리페치·크롤러가 DAU 를 부풀리지 않게)
+  const r4 = await fetch(`${BASE}/api/v1/heartbeat`);
+  check('heartbeat GET 은 열려 있지 않다', r4.status === 405 || r4.status === 404, `status=${r4.status}`);
+
+  // ⚠ app 파라미터를 **받지 않는다**. 인증 라우트라 앱은 토큰에서 나온다 —
+  //   쿼리를 붙여도 판정이 달라지지 않아야 한다(어긋날 자리를 안 만든다).
+  const r5 = await fetch(`${BASE}/api/v1/heartbeat?app=__nope__`, { method: 'POST' });
+  check('heartbeat app 쿼리는 무시된다 (여전히 401)', r5.status === 401, `status=${r5.status}`);
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -19,13 +19,24 @@ import type {
 export type * from './types';
 
 /** 앱에 복사할 때 이 값을 복사본 주석에 남긴다 — 서버 계약이 바뀌었는지 판단하는 유일한 단서다. */
-export const SDK_VERSION = '2026-09-01.2'; // 토큰 슬라이딩 갱신 + isSignedIn이 만료를 본다. 2026-09-01: fetchBootstrap이 세션을 실어 보냄
+export const SDK_VERSION = '2026-09-02'; // 웜 스타트 하트비트(heartbeat) + 토큰이 exp를 들고 다닌다
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
 /**
- * 세션 토큰 유효기간(일). **서버의 `TOKEN_TTL_MS`와 같은 값이어야 한다.**
- * 서버가 진실이고 이건 사본이다 — 어긋나면 앞서는 쪽으로 틀리게 해둔다(아래 tokenAlive 주석).
+ * 포그라운드 복귀 하트비트의 최소 간격. **SDK가 들고 있는다** — 앱마다 구현하면 어긋나고,
+ * 무엇보다 쿨다운은 실패 처리와 **같은 자리**라 한 곳에 있어야 한다.
+ * 서버는 (app, subject, day) PK로 멱등이라 중복이 무해하지만, 네트워크를 아끼는 건 앱의 몫이다.
+ */
+const HEARTBEAT_COOLDOWN_MS = 5 * 60 * 1000;
+
+/**
+ * ⚠ **레거시 폴백 전용.** 만료 기준의 진실은 이제 **토큰 안의 `exp`**다(서버 2026-09-02).
+ *
+ * 종전엔 이 상수가 서버 `TOKEN_TTL_MS`의 **사본**이었다. 값이 같아 무해했지만 누가 서버만
+ * 바꾸면 조용히 갈라지고, 그러면 "앱은 살아있다는데 서버는 401"(또는 반대)이 되는데 둘 다 조용하다.
+ * 지금은 `exp`가 없는 **옛 토큰**을 판정할 때만 쓴다 — 그 토큰들이 다 만료되면 이 상수는 죽는다.
+ * 🚫 이 값을 근거로 앱 동작을 바꾸지 마라. 서버가 TTL을 바꾸면 다음 갱신(최대 30일)에 자동 전파된다.
  */
 const SESSION_TTL_DAYS = 180;
 
@@ -35,6 +46,10 @@ const SESSION_TTL_DAYS = 180;
  * 왜 필요한가: 종전 `isSignedIn()`은 "저장소에 문자열이 있나"만 봤다. 그래서 만료된 토큰을
  * 들고도 "로그인 돼 있다"고 답했고, 그걸 믿는 `ensureDeviceSession()` 같은 가드가 재등록을
  * 영원히 건너뛰어 그 기기는 **활성 집계에서 조용히 사라졌다**.
+ *
+ * **`exp` 우선**(2026-09-02): 토큰이 자기 만료를 들고 다니므로 서버가 유일한 기준이 된다.
+ * `exp`가 없으면 그 도입 이전에 발급된 토큰이라 옛 규칙으로 폴백한다 — 안 그러면 기존
+ * 사용자가 전부 한 번에 로그아웃된다.
  *
  * 파싱이 실패하면 **죽은 것으로 본다**(fail-closed). 깨진 토큰을 살아있다고 보면 위 공백이
  * 그대로 재현되고, 죽은 것으로 보면 최악이 재발급 1회다(같은 deviceId면 같은 subject).
@@ -46,9 +61,10 @@ function tokenAlive(token: string | null): boolean {
     if (dot < 0) return false;
     // atob는 base64url을 모르므로 표준 base64로 되돌린다(RN·웹·Node 공통).
     const raw = atob(token.slice(0, dot).replace(/-/g, '+').replace(/_/g, '/'));
-    const iat = (JSON.parse(raw) as { iat?: number }).iat;
-    if (typeof iat !== 'number') return false;
-    return Date.now() - iat < SESSION_TTL_DAYS * 24 * 60 * 60 * 1000;
+    const p = JSON.parse(raw) as { iat?: number; exp?: number };
+    if (typeof p.exp === 'number') return Date.now() < p.exp;
+    if (typeof p.iat !== 'number') return false;
+    return Date.now() - p.iat < SESSION_TTL_DAYS * 24 * 60 * 60 * 1000;
   } catch {
     return false;
   }
@@ -67,6 +83,9 @@ export function createCommonServer(cfg: CommonServerConfig) {
 
   let token: string | null = null;
   let subject: Subject | null = null;
+  /** 마지막 하트비트 **시도** 시각. 메모리에만 둔다 — 프로세스가 죽으면 다음은 콜드 스타트이고,
+   *  그건 `fetchBootstrap()`이 이미 하트비트로 찍는다. */
+  let lastBeatAt = 0;
 
   /** 응답 없이 매달리지 않도록 타임아웃을 건다(사용자가 로딩에 갇히는 것 방지). */
   async function req(path: string, init?: RequestInit, withAuth = false): Promise<Response | null> {
@@ -160,6 +179,56 @@ export function createCommonServer(cfg: CommonServerConfig) {
         return { ok: true, data: { maintenance: j.maintenance, version: j.version, announcements: j.announcements } };
       } catch {
         return { ok: false, reason: 'error' };
+      }
+    },
+
+    /**
+     * 활성 하트비트 — **앱이 포그라운드로 돌아올 때마다** 부른다(2026-09-02).
+     *
+     * ```ts
+     * const sub = AppState.addEventListener('change', (st) => {
+     *   if (st === 'active') server.heartbeat();
+     * });
+     * return () => sub.remove();   // ⚠ cleanup 을 빼먹으면 리스너가 쌓인다
+     * ```
+     *
+     * 왜 필요한가: 하트비트가 `fetchBootstrap()`에만 얹혀 있었는데 앱들은 그걸 **JS 프로세스당 1회**만
+     * 부른다. RN에서 홈 버튼은 프로세스를 죽이지 않으므로 **웜 스타트에는 신호가 한 번도 안 나갔다** —
+     * 앱을 안 죽이는(= 자주 쓰는) 사용자일수록 DAU에서 덜 잡히는, 방향이 거꾸로인 오차였다.
+     *
+     * 🔴 **절대 reject 하지 않는다.** 네트워크 오류·타임아웃·미설정·세션 없음·쿨다운 미충족·
+     * 응답 파싱 실패를 전부 내부에서 삼키고 조용히 resolve 한다. **호출부는 `.catch()` 없이 불러도 된다** —
+     * 위 예시처럼 리스너 콜백은 동기라 잡을 곳이 없고, 거기서 새어 나간 rejection 은
+     * `ErrorBoundary`/`ErrorUtils` 를 둔 앱에서 **그대로 오류 UI가 된다**.
+     * 포그라운드 복귀는 부팅보다 훨씬 자주 일어나므로, 그러면 지하철에서 앱을 켤 때마다 오류가 뜬다.
+     * **관측이 사용자 눈에 보이면 설계가 틀린 것이다** — 그래서 반환값도 주지 않는다(성공 여부조차).
+     *
+     * 쿨다운 5분은 SDK 안에 있다. 그 안에 다시 불러도 아무 일도 일어나지 않는다(요청조차 안 나간다).
+     * ⚠ **실패해도 쿨다운을 소모한다**(시도 시각 기준) — 오프라인일 때 복귀마다 재시도하면 또 폭주한다.
+     */
+    async heartbeat(): Promise<void> {
+      try {
+        if (!baseUrl) return;
+        if (Date.now() - lastBeatAt < HEARTBEAT_COOLDOWN_MS) return;
+        // 세션이 없으면 **아무 일도 안 하고 끝난다**. 다른 메서드처럼 'not-signed-in'을 돌려줄
+        // 자리가 없으므로(반환값이 없다), 조용히 넘어가는 것이 유일하게 맞는 동작이다.
+        // 세션 확보는 부팅의 `ensureDeviceSession()`/`login()` 몫이다.
+        if (!(await loadToken())) return;
+        lastBeatAt = Date.now();
+
+        const res = await req('/api/v1/heartbeat', { method: 'POST' }, true);
+        if (!res) return; // 오프라인·타임아웃 — req()가 이미 삼켰다
+        if (res.status === 401) {
+          // 토큰이 죽었다. 폐기해 두면 다음 부팅의 ensureDeviceSession()이 재등록한다(자가 치유).
+          // ⚠ bootstrap과 반대다 — 거긴 진입 게이트라 무효 토큰을 조용히 무시하고 200을 준다.
+          await setSession(null, null);
+          return;
+        }
+        if (!res.ok) return;
+        const j = (await res.json()) as { session?: { token?: string } };
+        if (j.session?.token) await replaceToken(j.session.token); // 슬라이딩 갱신
+      } catch {
+        // 🔴 여기가 이 메서드의 계약이다. 무슨 일이 있어도 밖으로 던지지 않는다.
       }
     },
 
