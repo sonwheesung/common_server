@@ -670,6 +670,16 @@ export default function Ops() {
   // (`useEffect(..., [api])`) **탭 코드를 건드리지 않고** 전부 재조회된다.
   // 이게 없으면 구독·로그인설정 탭에서 새로고침을 눌러도 아무 일도 일어나지 않는다.
   const [nonce, setNonce] = useState(0);
+  /**
+   * 진행 중인 관리자 API 요청 수. **모든 호출이 `api()` 하나를 지나가므로 거기서만 센다** —
+   * 화면마다 로딩 플래그를 두면 어느 하나를 빠뜨렸을 때 "안 도는데 조용한" 상태가 된다.
+   */
+  const [inflight, setInflight] = useState(0);
+  /** 앱을 바꾸는 중인가. 사용자 지적(2026-09-02): 셀렉트로 앱을 바꿔도 화면이 그대로라 구분이 안 된다. */
+  const [switchingApp, setSwitchingApp] = useState(false);
+  /** 전환 시작 후 요청이 **실제로 한 번이라도 떴는지**. 안 보면 요청이 시작되기 전(inflight 0)에
+   *  곧바로 "끝났다"고 판정해 표시가 한 프레임만 깜빡인다. */
+  const sawRequest = useRef(false);
 
   const flash = useCallback((m: string) => {
     setToast(m);
@@ -711,13 +721,46 @@ export default function Ops() {
   /** 메뉴/앱 전환 = 상태 + URL 갱신(pushState → 뒤로가기로 복귀). 모바일 드로어도 닫는다. */
   const navigate = useCallback((next: { tab?: Tab; app?: string }) => {
     if (next.tab) setTab(next.tab);
-    if (next.app) setAppCode(next.app);
+    if (next.app) {
+      // ⚠ 같은 앱을 다시 고르면 표시하지 않는다 — 아무것도 안 바뀌는데 로딩을 보이면 거짓말이다.
+      setAppCode((cur) => {
+        if (next.app !== cur) {
+          sawRequest.current = false;
+          setSwitchingApp(true);
+        }
+        return next.app as string;
+      });
+    }
     setNavOpen(false);
     const u = new URL(window.location.href);
     if (next.tab) u.searchParams.set('tab', next.tab);
     if (next.app) u.searchParams.set('app', next.app);
     window.history.pushState({}, '', u);
   }, []);
+
+  /**
+   * 앱 전환이 **끝났는지** 판정한다.
+   *
+   * 조건이 둘인 이유: `switchingApp`을 켠 직후에는 아직 요청이 안 떠서 `inflight === 0`이다.
+   * 그것만 보고 끄면 표시가 **한 프레임 깜빡이고 사라진다**(사용자에겐 아무 일도 안 일어난 것과 같다).
+   * 그래서 "요청이 실제로 한 번이라도 떴다"(`sawRequest`)를 함께 본다.
+   *
+   * ⚠ 안전 타임아웃 5초 — 어떤 이유로든 요청이 안 뜨면 표시가 **영원히 켜진 채**로 남는다.
+   *   그건 로딩 표시가 없는 것보다 나쁘다(고장인지 느린 건지 구분이 아예 안 된다).
+   */
+  useEffect(() => {
+    if (!switchingApp) return;
+    if (inflight > 0) {
+      sawRequest.current = true;
+      return;
+    }
+    if (sawRequest.current) {
+      setSwitchingApp(false);
+      return;
+    }
+    const t = setTimeout(() => setSwitchingApp(false), 5000);
+    return () => clearTimeout(t);
+  }, [switchingApp, inflight]);
 
   /** 관리자 API 호출. 401이면 토큰을 버리고 즉시 입장 화면으로 되돌린다
    *  — 모든 호출이 이 함수를 거치므로, 세션 도중 토큰이 바뀌어도(회전·폐기) 한 곳에서 처리된다.
@@ -727,24 +770,31 @@ export default function Ops() {
    *  fetch 자체의 throw를 여기서 잡아 status 0으로 정규화하면 호출부의 실패 경로가 자연히 탄다. */
   const api = useCallback(
     async (path: string, init?: RequestInit) => {
-      let res: Response;
+      // 요청 수를 여기서 센다 — 성공·실패·throw 어느 쪽으로 나가도 finally 가 한 번만 줄인다.
+      // 화면 로딩 표시가 켜진 채 안 꺼지는 사고는 대개 "실패 경로에서 안 줄인 것"이다.
+      setInflight((n) => n + 1);
       try {
-        res = await fetch(`/api/admin/${path}`, {
-          ...init,
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
-        });
-      } catch {
-        throw new Error(reasonKo('network', 0));
+        let res: Response;
+        try {
+          res = await fetch(`/api/admin/${path}`, {
+            ...init,
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
+          });
+        } catch {
+          throw new Error(reasonKo('network', 0));
+        }
+        if (res.status === 401) {
+          clearToken();
+          setToken('');
+          setVerified(false);
+          throw new Error(reasonKo('unauthorized', 401));
+        }
+        const json = await res.json().catch(() => ({ ok: false, reason: 'parse-error' }));
+        if (!res.ok || !json.ok) throw new Error(reasonKo(json.reason ?? 'error', res.status));
+        return json;
+      } finally {
+        setInflight((n) => n - 1);
       }
-      if (res.status === 401) {
-        clearToken();
-        setToken('');
-        setVerified(false);
-        throw new Error(reasonKo('unauthorized', 401));
-      }
-      const json = await res.json().catch(() => ({ ok: false, reason: 'parse-error' }));
-      if (!res.ok || !json.ok) throw new Error(reasonKo(json.reason ?? 'error', res.status));
-      return json;
     },
     // nonce는 쓰이지 않지만 **의존성으로는 필요하다** — 이 참조가 새로 만들어져야 탭들이 재조회한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1018,13 +1068,36 @@ export default function Ops() {
           </Button>
         </header>
 
+        {/* 전역 진행 바 — 요청이 하나라도 떠 있으면 보인다. 앱 전환만이 아니라 저장·조회 전부에 걸린다.
+            화면마다 로딩을 두는 대신 `api()` 한 곳에서 세므로 **빠뜨릴 화면이 없다**. */}
+        <div
+          aria-hidden
+          className={`pointer-events-none fixed inset-x-0 top-0 z-50 h-0.5 transition-opacity duration-150 ${
+            inflight > 0 ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <div className="h-full w-full origin-left animate-[ops-progress_1.1s_ease-in-out_infinite] bg-accent-strong" />
+        </div>
+
         <main className="mx-auto max-w-5xl px-6 py-7">
+          {/* 앱 전환은 **본문이 통째로 바뀌는데 레이아웃이 같아서** 아무 일도 안 일어난 것처럼 보인다.
+              그래서 전환 중에는 본문을 흐리게 하고 무엇을 하는 중인지 글자로 말한다(2026-09-02 사용자 지적). */}
+          {switchingApp && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2.5 text-[13px] font-medium text-fg-muted">
+              <Loader2 className="size-4 animate-spin" />
+              <span className="text-fg">{currentApp?.name ?? appCode}</span> 로 바꾸는 중…
+            </div>
+          )}
+
           {err && (
             <div className="mb-5 flex items-center gap-2 rounded-lg bg-danger-soft px-3 py-2.5 text-[13px] font-medium text-danger">
               <AlertTriangle className="size-4 shrink-0" /> {err}
             </div>
           )}
 
+          <div
+            className={`transition-opacity duration-150 ${switchingApp ? 'pointer-events-none opacity-40' : 'opacity-100'}`}
+          >
           {booting ? (
             <EmptyState icon={Loader2}>불러오는 중…</EmptyState>
           ) : !appCode && tab !== 'apps' ? (
@@ -1064,6 +1137,7 @@ export default function Ops() {
           ) : (
             <AppsTab api={api} apps={apps} reload={loadApps} onError={setErr} flash={flash} />
           )}
+          </div>
         </main>
       </div>
 

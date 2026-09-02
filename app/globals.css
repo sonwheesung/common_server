@@ -125,3 +125,19 @@ body {
 :root[data-theme='dark'] input[type='datetime-local']::-webkit-calendar-picker-indicator {
   filter: invert(1);
 }
+
+/* 상단 진행 바 — 남은 시간을 모르므로 **진행률이 아니라 움직임**으로 "일하는 중"만 말한다.
+   가짜 퍼센트를 그리면 90%에서 멈춰 있는 흔한 거짓말이 된다. */
+@keyframes ops-progress {
+  0% {
+    transform: scaleX(0);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleX(0.7);
+  }
+  100% {
+    transform: scaleX(1);
+    opacity: 0.2;
+  }
+}
