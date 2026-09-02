@@ -151,15 +151,17 @@ lib/                             admin·apps·auth·revenuecat·rcPull·entitlem
 
 ## 연동 중인 앱
 
-앱의 SDK 복사본 버전은 **운영 지표에 직결**된다 — 2026-09-01 미만은 부팅 시 세션을 안 실어 보내므로
-그 앱의 DAU는 **재배포 전까지 0**이다(콘솔이 "활성 계측 미수집"으로 표시한다).
+앱의 SDK 복사본 버전은 **운영 지표에 직결**된다 — 2026-09-02 미만은 **포그라운드 복귀를 안 센다**.
+그 앱의 DAU는 "앱을 새로 켠 사람"만 잡히고, 콘솔이 **"웜 스타트 계측 미부착"** 으로 표시한다.
+🔴 **코드가 있는 것과 사용자에게 닿은 것은 다르다** — 서버는 **실제 신호로만** 판정한다.
+스토어·OTA 현황은 `C:\project\common\PLAY_CONSOLE_STATUS.md`(§2-1 스토어 · §2-4 OTA · §5 도달).
 
 | app_code | 앱 | SDK 복사본 | 상태 |
 |----------|-----|-----------|------|
-| `myword` | `C:\project\my_word\my_word` (Expo, 로그인 없음) | **2026-08-06** | 문의는 이미 공통 서버로 들어온다. 하지만 최초판 SDK라 **신원(deviceId)이 없다** — 문의가 전부 익명이라 답변을 돌려줄 경로가 없고 DAU도 안 잡힌다 |
+| `myword` | `C:\project\my_word\my_word` (Expo, 로그인 없음) | **2026-09-02** | 🟢 프로덕션(19/1.3.3 · 145개국). 웜 스타트 하트비트 부착(OTA). ~~최초판 SDK라 신원이 없다~~ → 기기 subject 도입 완료 |
 | `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-19 | 2026-08-09 등록. 문의는 **로그인 필수** 구조. ⚠ 주체가 2행이다(아래 정의 참조) — 콘솔이 `subjectsDualCounted`로 **스스로 판정해 경고를 띄운다**(앱 코드 하드코딩 아님) |
-| `linkmemo` | `C:\project\link_memo` (Expo, 로그인 없음) | 2026-08-14 | `ensureDeviceSession()` 보유 — 하트비트를 붙이는 기준 구현체 |
-| `idearepository` | `C:\project\idea_repository` (Expo, 로그인 없음) | 2026-08-14 | 2026-08-17 등록. linkmemo와 같은 구조 |
+| `linkmemo` | `C:\project\link_memo` (Expo, 로그인 없음) | **2026-09-02** | 🟢 프로덕션(11/1.0.7). 웜 스타트 하트비트 부착(OTA). `ensureDeviceSession()` 기준 구현체 |
+| `idearepository` | `C:\project\idea_repository` (Expo, 로그인 없음) | **2026-09-02** | 🟢 **프로덕션 출시**(2026-09-02 · 11/1.0.10 · 177개국). 웜 스타트 하트비트 부착. 알파 트랙 병행 유지 |
 
 ⚠ **이미 스토어에 나간 my_word 버전은 계속 배구 서버를 호출한다.** 배구의 `ANON_TICKET_PROJECTS`에서
 `myword`를 빼면 구버전 문의가 죽는다. 구버전 수명이 다할 때까지 유지할 것.
