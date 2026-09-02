@@ -26,7 +26,7 @@
 |---|---|---|---|
 | `my_word` | `BootstrapContext` | **OTA**(런타임 1.3.3) | ⏳ R8 E2E를 이 착지 뒤로 미뤄 둠 |
 | `linkmemo` | `boot-gate.tsx` | **OTA**(런타임 1.0.0) | ⏳ |
-| `idearepository` | `boot-gate.tsx` | **vc11에 내장**(AAB 재빌드 완료) | ✅ 반영 완료(`d4649f8`·`ec16a42`) — 라이브는 vc11부터. 업로드는 rev.6 게시 후 사용자 지시 |
+| `idearepository` | `boot-gate.tsx` | **vc11에 내장**(AAB 재빌드 완료) | ✅ 반영 완료(`d4649f8`·`ec16a42`). 🎉 **프로덕션 액세스 권한 부여됨**(9/2 콘솔 실측) — 다만 트랙은 아직 **비활성**이고 vc11 업로드가 다음 관문(rev.6 게시 선행) |
 | `jogak` | `app/_layout.tsx` | **vc17에 내장**(expo-updates 없음) | ✅ 반영 완료(`0a7b7ce`) — 라이브는 vc17부터. vc16 검토 끝난 뒤 |
 
 🔴 **처리방침 문안이 같이 바뀐다 — 내가 스펙에 안 적었다.**
