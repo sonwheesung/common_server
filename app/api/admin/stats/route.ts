@@ -47,6 +47,7 @@ const ALERT_CHECKS = [
   'RC 웹훅 시크릿',
   '문의 알림 채널',
   '활성 계측',
+  '웜 스타트 계측',
 ];
 
 export async function GET(req: Request) {
@@ -238,6 +239,23 @@ export async function GET(req: Request) {
         detail: `주체 ${one(subjTotal)}명이 있지만 활성 기록이 0행 — 앱이 SDK ${'2026-09-01'} 이상으로 재배포도었는지 확인하세요`,
         severity: 'warn',
         tab: 'overview',
+      });
+    }
+
+    // 🔴 **웜 스타트 계측이 안 붙었다.** 앱이 SDK는 복사했는데 `AppState` 리스너를 안 붙이면
+    // 서버에서는 그 둘이 **구분되지 않는다** — 콜드 스타트 하트비트는 그대로 오기 때문이다.
+    // 이 알림이 그 차이를 드러내는 유일한 신호다("복사했다"와 "동작한다"는 다르다).
+    //
+    // ⚠ 활성 기록이 아예 없는 앱에는 안 띄운다 — 그건 위의 `activity_uncollected`가 말한다.
+    //   두 알림이 같은 앱에 동시에 뜨면 "무엇부터 고칠지"가 흐려진다.
+    if (activity.coverageDays > 0 && activity.warmSince === null) {
+      alerts.push({
+        key: 'warm_uncollected',
+        label: '웜 스타트 계측 미부착',
+        detail:
+          'DAU가 과소집계되고 있습니다 — 앱을 켠 뒤 안 죽이는 사용자는 다음 날부터 안 잡힙니다. ' +
+          '앱이 SDK 2026-09-02 이상으로 재배포되고 AppState 리스너를 붙여야 합니다.',
+        severity: 'warn',
       });
     }
     if (!infra.discord) {

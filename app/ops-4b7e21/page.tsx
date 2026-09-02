@@ -140,6 +140,11 @@ type Stats = {
     hourCoverageDays: number;
     hourChartReady: boolean;
     coverageDays: number;
+    /** 웜 스타트(포그라운드 복귀)를 처음 센 날. null = 앱이 아직 안 붙였다. */
+    warmSince: string | null;
+    /** 그 앱에 **계측 경계가 실제로 있는가**. 첫날부터 붙어 있었으면 false — 비교할 이전 구간이 없다. */
+    warmBoundary: boolean;
+    warmCoverageDays: number;
     chartReady: boolean;
     windowDays: number;
   };
@@ -1119,15 +1124,22 @@ function DayBars({
   rows,
   unit,
   note,
+  boundary,
 }: {
   title: string;
   rows: { day: string; n: number }[];
   unit: string;
   note?: string;
+  /** 계측 방식이 바뀐 날('YYYY-MM-DD'). 이 날부터 막대 색을 바꾸고 경계선을 긋는다. */
+  boundary?: string | null;
 }) {
   const max = Math.max(1, ...rows.map((d) => d.n));
   const first = rows[0];
   const last = rows[rows.length - 1];
+  // 경계가 창 안에 있을 때만 그린다. 창 밖(이미 지난 과거)이면 이 차트의 모든 막대가
+  // 같은 방식으로 측정된 것이라 표시할 이유가 없다.
+  const bIdx = boundary ? rows.findIndex((d) => d.day >= boundary) : -1;
+  const showBoundary = bIdx > 0; // 0이면 첫 막대부터 새 방식 = 경계가 창 밖이다
   return (
     <div>
       <p className="mb-2 flex flex-wrap items-baseline gap-x-2 text-[12px] font-medium text-fg-muted">
@@ -1135,15 +1147,40 @@ function DayBars({
         {note && <span className="font-normal text-fg-muted/70">{note}</span>}
       </p>
       <div className="flex h-24 items-stretch gap-[2px]">
-        {rows.map((d) => (
-          <div key={d.day} className="flex flex-1 flex-col justify-end" title={`${d.day} · ${d.n}${unit}`}>
+        {rows.map((d, i) => {
+          const old = showBoundary && i < bIdx;
+          return (
             <div
-              className={`rounded-t-[4px] ${d.n === 0 ? 'bg-border' : d.day === last?.day ? 'bg-accent' : 'bg-accent/55'}`}
-              style={{ height: d.n === 0 ? '2px' : `${Math.max((d.n / max) * 100, 8)}%` }}
-            />
-          </div>
-        ))}
+              key={d.day}
+              className={`relative flex flex-1 flex-col justify-end ${showBoundary && i === bIdx ? 'border-l border-dashed border-warn' : ''}`}
+              title={
+                old
+                  ? `${d.day} · ${d.n}${unit} — ⚠ 웜 스타트 계측 전(과소집계)`
+                  : `${d.day} · ${d.n}${unit}`
+              }
+            >
+              <div
+                className={`rounded-t-[4px] ${
+                  d.n === 0
+                    ? 'bg-border'
+                    : old
+                      ? 'bg-accent/25' // 계측 전 — 같은 축에 있지만 **같은 방식으로 잰 값이 아니다**
+                      : d.day === last?.day
+                        ? 'bg-accent'
+                        : 'bg-accent/55'
+                }`}
+                style={{ height: d.n === 0 ? '2px' : `${Math.max((d.n / max) * 100, 8)}%` }}
+              />
+            </div>
+          );
+        })}
       </div>
+      {showBoundary && (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-warn">
+          ⚠ 점선 왼쪽은 <strong className="font-medium">웜 스타트 계측 전</strong>입니다 — 값이 낮은 건 사용자가 적어서가
+          아니라 <strong className="font-medium">덜 셌기 때문</strong>입니다. 경계를 넘는 증감을 성장으로 읽지 마세요.
+        </p>
+      )}
       <div className="mt-1.5 flex justify-between text-[11px] text-fg-muted">
         <span>{first ? mdOf(first.day) : ''}</span>
         <span>
@@ -1192,7 +1229,10 @@ function Activity({ a }: { a: Stats['activity'] }) {
         <h2 className={`flex items-center gap-2 ${sectionTitle}`}>
           활성 사용자 <Src>자체 집계</Src>
         </h2>
-        <span className="text-[12px] text-fg-muted">수집 {a.coverageDays}일차</span>
+        <span className="text-[12px] text-fg-muted">
+          수집 {a.coverageDays}일차
+          {a.warmSince !== null && <> · 웜 {a.warmCoverageDays}일차</>}
+        </span>
       </div>
 
       {/* 정의를 숫자 옆에 둔다 — "활성"은 사람마다 다르게 상상하는 말이라 적어두지 않으면 오독된다. */}
@@ -1200,6 +1240,24 @@ function Activity({ a }: { a: Stats['activity'] }) {
         활성 = 그날 앱을 켜서 서버에 닿은 순 사용자. 하루에 여러 번 켜도 1명입니다.
         <br />
         기기를 바꾸거나 앱을 지우면 다른 사람으로 잡힙니다 — 낮게 나오는 쪽이 아니라 오히려 높게 나올 수 있는 방향입니다.
+        {/* 🔴 계측 상태를 **셋으로 나눠 말한다.** 하나로 뭉치면 "안 붙음"과 "처음부터 정확함"이
+            같은 문장을 받게 되고, 그건 정상을 이상처럼 보이게 한다. */}
+        <br />
+        {a.warmSince === null ? (
+          <span className="text-warn">
+            ⚠ <strong className="font-medium">웜 스타트를 아직 못 세고 있습니다</strong> — 앱을 켠 뒤 죽이지 않는
+            사용자는 <strong className="font-medium">다음 날부터 안 잡힙니다.</strong> 지금 값은 실제보다 낮습니다.
+          </span>
+        ) : a.warmBoundary ? (
+          <span className="text-warn">
+            ⚠ <strong className="font-medium">{a.warmSince}부터</strong> 포그라운드 복귀까지 셉니다(그 전은 앱 실행 시만).
+            그날 전후를 비교하지 마세요 — <strong className="font-medium">사용자가 는 게 아니라 세는 방법이 바뀐 것</strong>입니다.
+          </span>
+        ) : (
+          <span className="text-ok">
+            ✓ 첫 기록일부터 포그라운드 복귀까지 셌습니다 — 계측 경계가 없어 전 구간을 그대로 비교할 수 있습니다.
+          </span>
+        )}
       </p>
 
       {/* 헤드라인 3개 — 차트보다 먼저 읽힐 숫자 */}
@@ -1222,7 +1280,12 @@ function Activity({ a }: { a: Stats['activity'] }) {
           같은 축에 놓으면 "오늘 신규가 활성보다 많네" 같은 무의미한 비교를 유도한다.
           각각 단일 계열이라 범례도 필요 없다(제목이 계열 이름이다). */}
       <div className="grid gap-5 sm:grid-cols-2">
-        <DayBars title={`최근 ${a.series.length}일 일별 활성자`} rows={a.series} unit="명" />
+        <DayBars
+          title={`최근 ${a.series.length}일 일별 활성자`}
+          rows={a.series}
+          unit="명"
+          boundary={a.warmBoundary ? a.warmSince : null}
+        />
         <DayBars title={`최근 ${a.signups.length}일 신규 가입`} rows={a.signups} unit="명" note="계측 무관 · 처음부터 쌓임" />
       </div>
 

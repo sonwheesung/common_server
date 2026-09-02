@@ -265,6 +265,63 @@ if (TOKEN) {
   }
 }
 
+// ── 웜 스타트 계측 경계 (2026-09-02) ────────────────────────────────────────
+// 앱이 AppState 리스너를 붙이는 날 그 앱의 DAU가 뛴다. 사용자가 는 게 아니라 **세는 방법이 바뀐 것**인데,
+// 화면에는 똑같이 "DAU 증가"로 보인다. 그래서 서버가 경계를 데이터에서 파생시켜 내려준다.
+//
+// 🔴 여기서 지켜야 할 것은 **셋을 구분한다**는 것이다:
+//   warmSince === null            → 아직 안 붙였다(값이 실제보다 낮다)
+//   warmBoundary === true         → 경계가 있다(그날 전후를 비교하면 안 된다)
+//   warmSince 있고 boundary false → 첫날부터 붙어 있었다(경계 없음 — 경고하면 정상을 이상으로 말하는 것)
+// 셋을 뭉치면 마지막 경우에까지 경고가 붙어 신뢰가 깎인다.
+if (TOKEN) {
+  const ar = await get('apps', TOKEN);
+  const aj = (await ar.json()) as { apps?: { appCode: string }[] };
+  const codes = (aj.apps ?? []).map((a) => a.appCode);
+  if (codes.length === 0) {
+    skip('warm-boundary', '등록된 앱 없음');
+  } else {
+    for (const code of codes) {
+      const r = await get(`stats?app=${code}`, TOKEN);
+      const j = (await r.json()) as {
+        activity?: { coverageDays: number; warmSince: string | null; warmBoundary: boolean; warmCoverageDays: number };
+        alerts?: { key: string }[];
+      };
+      const a = j.activity;
+      if (!a) {
+        check(`${code}: activity 가 온다`, false);
+        continue;
+      }
+      check(
+        `${code}: warmSince 는 null 또는 'YYYY-MM-DD'`,
+        a.warmSince === null || /^\d{4}-\d{2}-\d{2}$/.test(a.warmSince),
+        `warmSince=${a.warmSince}`,
+      );
+      // 🔴 경계는 **warmSince 가 있을 때만** 참일 수 있다. null 인데 true 면 화면이 없는 경계를 그린다.
+      check(`${code}: warmSince 가 null 이면 경계도 없다`, a.warmSince !== null || a.warmBoundary === false);
+      // 웜을 한 번도 못 셌으면 웜 수집일수는 0이어야 한다 — 어긋나면 화면이 "웜 N일차"를 거짓으로 찍는다
+      check(
+        `${code}: warmSince 가 null 이면 warmCoverageDays 는 0`,
+        a.warmSince !== null || a.warmCoverageDays === 0,
+        `days=${a.warmCoverageDays}`,
+      );
+      // 웜 수집일수는 전체 수집일수를 넘을 수 없다(웜은 활성 기록의 부분집합이다)
+      check(
+        `${code}: warmCoverageDays <= coverageDays`,
+        a.warmCoverageDays <= a.coverageDays,
+        `warm=${a.warmCoverageDays} all=${a.coverageDays}`,
+      );
+      // 알림과 데이터가 어긋나지 않는가 — 화면 문구와 알림이 다른 말을 하면 안 된다
+      const hasAlert = (j.alerts ?? []).some((x) => x.key === 'warm_uncollected');
+      check(
+        `${code}: 미부착 알림이 데이터와 일치`,
+        hasAlert === (a.coverageDays > 0 && a.warmSince === null),
+        `alert=${hasAlert} cov=${a.coverageDays} warmSince=${a.warmSince}`,
+      );
+    }
+  }
+}
+
 // ── 🔴 **예상 밖의 스킵**을 잡는다 (2026-09-02) ──────────────────────────────
 // 바닥(MIN_CHECKS)은 "몇 개 돌았나"를 본다. 그것만으로는 **새 스킵이 옛 스킵 뒤에 숨는다** —
 // 정당한 스킵이 이미 개수를 깎아두면, 다른 섹션이 하나 더 죽어도 바닥 안에 들어올 수 있다.
@@ -272,7 +329,7 @@ if (TOKEN) {
 //
 // ⚠ 여기 이름들은 **환경 조건부**라 안 도는 게 정상인 것들이다(고장난 것이 아니다).
 //   새 스킵을 추가하면 이 목록에도 등록해야 하고, **등록을 잊으면 여기서 걸린다** — 그게 요점이다.
-const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 'admin-happy-path', 'dual-count'];
+const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 'admin-happy-path', 'dual-count', 'warm-boundary'];
 {
   const unknown = skipped.filter((n) => !KNOWN_SKIPS.includes(n));
   if (unknown.length > 0) {
@@ -293,7 +350,7 @@ const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다 —
 //   안 올리면 다음에 섹션이 하나 죽어도 바닥에 안 걸린다.
 // 사유: ADMIN_TOKEN 이 없으면 대부분 스킵된다 — 그때 걸리는 게 맞다
-const MIN_CHECKS = 45;
+const MIN_CHECKS = 60; // 2026-09-02: 웜 경계 5×앱 추가
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {

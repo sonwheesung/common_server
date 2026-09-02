@@ -38,7 +38,10 @@ export async function POST(req: Request) {
 
     // 응답 후 처리 — 관측이 복귀를 1ms도 늦추지 않는다. (app, subject, day) PK가 멱등이라
     // 5분에 한 번씩 찍혀도 하루 1행이고, `hours` 비트는 OR이라 순서와 무관하다.
-    afterSafe(() => recordActive(subject.appCode, subject.id));
+    // 'warm' — 이 기록이 **포그라운드 복귀**에서 왔다는 표식이다. 그래야 콘솔이
+    // "이 앱은 언제부터 웜 스타트를 셌나"를 데이터에서 알아내고, 그날의 DAU 상승을
+    // 성장이 아니라 **계측 변화**로 말할 수 있다.
+    afterSafe(() => recordActive(subject.appCode, subject.id, new Date(), 'warm'));
 
     // ── 슬라이딩 갱신 ──
     // bootstrap에만 두면 **앱을 안 죽이는 사용자는 갱신도 못 받는다** — 웜 스타트 구멍이

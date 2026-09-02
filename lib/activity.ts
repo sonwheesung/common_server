@@ -18,6 +18,7 @@ import {
   hourChartReady,
   kstYmd,
   weekdayAverages,
+  warmBoundaryOf,
   weekdayChartReady,
   windowDayKeys,
   type WeekdayBucket,
@@ -40,18 +41,33 @@ export * from './activityMath';
  *
  * **실패는 삼킨다.** 관측이 본 기능(부팅·로그인)을 막으면 안 된다.
  */
-export async function recordActive(appCode: string, subjectId: string, now: Date = new Date()): Promise<void> {
+export async function recordActive(
+  appCode: string,
+  subjectId: string,
+  now: Date = new Date(),
+  /**
+   * 이 기록이 어디서 왔나. `'warm'`은 **포그라운드 복귀 하트비트**(`POST /v1/heartbeat`)다.
+   *
+   * 왜 구분하나: 앱이 `AppState` 리스너를 붙이는 날 그 앱의 DAU가 뛰는데, 사용자가 는 게 아니라
+   * **세는 방법이 바뀐 것**이다. 그 경계를 화면이 말하려면 "언제부터 웜 스타트를 셌나"를 알아야 하고,
+   * 그건 **기록에 출처를 남겨야만** 알 수 있다(운영자가 손으로 적는 칸은 어긋나도 아무도 모른다).
+   */
+  source: 'boot' | 'warm' = 'boot',
+): Promise<void> {
   try {
     const bit = hourBit(now);
+    const warm = source === 'warm';
     await Promise.all([
       // 시각 비트를 OR로 얹는다 — 같은 시각에 몇 번을 켜도 결과가 같고(멱등), 도착 순서와도 무관하다.
       // 그래서 하트비트가 세 곳(bootstrap·devices·login)이어도 하루 1행이 유지된다.
       db
         .insert(subjectActiveDay)
-        .values({ appCode, subjectId, day: kstYmd(now), hours: bit })
+        .values({ appCode, subjectId, day: kstYmd(now), hours: bit, warm })
         .onConflictDoUpdate({
           target: [subjectActiveDay.appCode, subjectActiveDay.subjectId, subjectActiveDay.day],
-          set: { hours: sql`${subjectActiveDay.hours} | ${bit}` },
+          // `warm`도 OR로 얹는다 — 하루에 콜드 1번 + 웜 3번이면 결과는 true 하나이고,
+          // 도착 순서와 무관하다(hours 비트와 같은 성질). 한번 켜지면 그날은 안 꺼진다.
+          set: { hours: sql`${subjectActiveDay.hours} | ${bit}`, warm: sql`${subjectActiveDay.warm} or ${warm}` },
         }),
       db.update(subjects).set({ lastSeenAt: now }).where(eq(subjects.id, subjectId)),
     ]);
@@ -89,6 +105,26 @@ export interface ActivitySummary {
   hourChartReady: boolean;
   /** 첫 기록일부터 오늘까지 며칠어치를 **모았나**. 0 = 수집 개시 전. */
   coverageDays: number;
+
+  /**
+   * 웜 스타트(포그라운드 복귀)를 **처음 센 날**. `null` = 아직 한 번도 못 셌다(앱이 안 붙였다).
+   *
+   * 이게 필요한 이유: 앱이 `AppState` 리스너를 붙이는 날 그 앱의 DAU가 뛴다. 사용자가 는 게 아니라
+   * **세는 방법이 바뀐 것**인데, 화면에는 똑같이 "DAU 증가"로 보인다. 그 경계를 말하지 않으면
+   * 다음 사람이 "9월 초에 성장했다"로 읽는다.
+   */
+  warmSince: string | null;
+
+  /**
+   * 🔴 **경계가 실제로 있는가.** `warmSince`가 있다고 다 경계인 게 아니다 —
+   * 첫 활성일부터 웜을 셌다면(= 앱이 처음부터 붙이고 나왔다면) **비교할 이전 구간이 없다.**
+   * idea_repository가 그 경우다(첫 프로덕션 빌드에 하트비트가 들어 있다).
+   * 그런 앱에까지 경고를 띄우면 **정상을 이상으로 말하는 것**이라 오히려 신뢰를 깎는다.
+   */
+  warmBoundary: boolean;
+
+  /** 웜 스타트를 센 일수(첫 웜 기록일부터 오늘까지). 0 = 아직 못 셌다. */
+  warmCoverageDays: number;
   chartReady: boolean;
   windowDays: number;
 }
@@ -107,7 +143,7 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
   const wauFrom = kstYmd(new Date(now.getTime() - 6 * DAY_MS)); // 오늘 포함 7일
   const mauFrom = kstYmd(new Date(now.getTime() - 29 * DAY_MS));
 
-  const [daily, uniq, first, signup, hourly, hourFirst] = await Promise.all([
+  const [daily, uniq, first, signup, hourly, hourFirst, warmFirst] = await Promise.all([
     db
       .select({ day: subjectActiveDay.day, n: sql<number>`count(*)::int` })
       .from(subjectActiveDay)
@@ -153,6 +189,12 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
       .select({ first: sql<string | null>`min(${subjectActiveDay.day})` })
       .from(subjectActiveDay)
       .where(and(eq(subjectActiveDay.appCode, appCode), sql`${subjectActiveDay.hours} <> 0`)),
+    // 웜 스타트 개시일 — **데이터에서 파생된다.** 운영자가 적는 칸을 두면 앱이 실제로 붙인 날과
+    // 어긋나고, 어긋난 줄 아무도 모른다(적는 걸 잊으면 영영 빈칸이다).
+    db
+      .select({ first: sql<string | null>`min(${subjectActiveDay.day})` })
+      .from(subjectActiveDay)
+      .where(and(eq(subjectActiveDay.appCode, appCode), eq(subjectActiveDay.warm, true))),
   ]);
 
   const per = new Map(daily.map((r) => [String(r.day).slice(0, 10), r.n]));
@@ -178,6 +220,11 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
   const coverageDays = coverageFrom(first[0]?.first);
   const hourCov = coverageFrom(hourFirst[0]?.first);
 
+  const firstDay = first[0]?.first ? String(first[0].first).slice(0, 10) : null;
+  const warmSince = warmFirst[0]?.first ? String(warmFirst[0].first).slice(0, 10) : null;
+  // 판정 규칙은 순수 함수에 있다 — 가드가 DB 없이 네 조합을 다 밟아본다(activityMath.warmBoundaryOf).
+  const warmBoundary = warmBoundaryOf(firstDay, warmSince);
+
   return {
     dau: per.get(today) ?? 0,
     wau: uniq[0]?.wau ?? 0,
@@ -189,6 +236,9 @@ export async function activitySummary(appCode: string, now: Date = new Date()): 
     hourCoverageDays: hourCov,
     hourChartReady: hourChartReady(hourCov),
     coverageDays,
+    warmSince,
+    warmBoundary,
+    warmCoverageDays: coverageFrom(warmFirst[0]?.first),
     chartReady: weekdayChartReady(coverageDays),
     windowDays: WEEKDAY_WINDOW_DAYS,
   };

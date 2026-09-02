@@ -56,6 +56,17 @@ try {
   };
   check('발급 토큰에 exp 가 있다', typeof payload.exp === 'number', `exp=${payload.exp}`);
 
+  // ── 1.5. 🔴 기기 등록만으로는 **웜이 아니다** ──
+  // `/v1/devices`는 콜드 스타트 경로라 `recordActive(..., 'boot')`를 부른다. 여기서 warm이 켜지면
+  // "앱이 AppState 리스너를 붙였다"를 서버가 잘못 판정하게 되고, 콘솔이 있지도 않은 계측 경계를
+  // 그리거나 미부착 경고를 조용히 삼킨다. 출처 구분의 전부가 이 한 줄에 걸려 있다.
+  {
+    const rows = await sql<{ warm: boolean }[]>`
+      select warm from subject_active_day where subject_id = ${subjectId} and day = ${kstYmd()} limit 1
+    `;
+    check('기기 등록만으로는 warm 이 켜지지 않는다', rows[0]?.warm === false, `warm=${rows[0]?.warm}`);
+  }
+
   // ── 2. 하트비트 ──
   const hb = await fetch(`${BASE}/api/v1/heartbeat`, {
     method: 'POST',
@@ -79,6 +90,21 @@ try {
   }
   check('subject_active_day 에 오늘 행이 생겼다', row !== undefined, `day=${today}`);
   check('시각 비트가 정확히 1개 켜졌다', row ? hourCount(row.hours) === 1 : false, `hours=${row?.hours}`);
+
+  // ── 3.5. 하트비트 뒤에는 warm 이 켜진다 + 집계가 그걸 읽는다 ──
+  {
+    const rows = await sql<{ warm: boolean }[]>`
+      select warm from subject_active_day where subject_id = ${subjectId} and day = ${today} limit 1
+    `;
+    check('하트비트 뒤에는 warm 이 켜진다', rows[0]?.warm === true, `warm=${rows[0]?.warm}`);
+
+    // 집계가 그 표식을 실제로 읽는가 — 컬럼만 켜지고 activitySummary 가 안 보면 화면은 여전히
+    // "미부착"이라고 말한다(컬럼과 화면이 따로 노는 가장 흔한 고장).
+    const agg = await sql<{ first: string | null }[]>`
+      select min(day) as first from subject_active_day where app_code = ${APP} and warm = true
+    `;
+    check('집계가 warm 을 읽는다 (min(day) 가 오늘)', agg[0]?.first === today, `first=${agg[0]?.first}`);
+  }
 
   // ── 4. 멱등 — 두 번 찍어도 1행 ──
   await fetch(`${BASE}/api/v1/heartbeat`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });

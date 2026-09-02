@@ -154,3 +154,20 @@ export function weekdayAverages(daily: readonly (readonly [string, number])[]): 
  *   수집을 하루도 안 한 상태에서 차트가 "월요일 최다"라고 단언한다(배구 서버 실사고).
  */
 export const weekdayChartReady = (coverageDays: number): boolean => coverageDays >= WEEKDAY_MIN_SAMPLES * 7;
+
+/**
+ * **계측 경계가 실제로 있는가.** 웜 스타트를 처음 센 날이 활성을 처음 센 날보다 **뒤**일 때만 참이다.
+ *
+ * 왜 `warmSince !== null`로 충분하지 않은가: 앱이 **처음부터** 하트비트를 달고 나왔다면
+ * 웜 개시일 = 첫 활성일이고, 그러면 **비교할 이전 구간이 없다.** 그런 앱에까지 "그날 전후를
+ * 비교하지 마세요"를 띄우면 정상을 이상으로 말하는 것이라 오히려 화면의 신뢰를 깎는다.
+ * (idea_repository가 그 경우다 — 프로덕션 첫 빌드에 하트비트가 들어 있다.)
+ *
+ * 순수 함수로 뺀 이유는 이 프로젝트의 기존 규칙과 같다 — 가드가 **DB 없이 실제로 호출해서**
+ * 네 조합을 다 밟아보기 위해서다. 지금은 어느 앱도 경계 상태가 아니라, DB를 통해서는
+ * 참인 경우를 한 번도 못 밟는다(대조군이 없으면 통과가 통과를 증명하지 못한다).
+ */
+export function warmBoundaryOf(firstDay: string | null, warmSince: string | null): boolean {
+  if (!warmSince || !firstDay) return false;
+  return warmSince > firstDay; // 'YYYY-MM-DD'는 사전순 = 시간순
+}
