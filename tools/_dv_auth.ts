@@ -177,5 +177,28 @@ const FORGED = 'eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJmYWtlIiwiYXBwIjoibXl3b3JkIiwiaWF
   }
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
+// ── 🔴 가드가 **줄어든 것**을 잡는다 (2026-09-02) ────────────────────────────
+// my_word 세션 실측: jest 스위트 9개 중 7개가 로드조차 안 되고 있었는데, 죽은 스위트의
+// 테스트는 **실패가 아니라 세어지지도 않는다**. 그래서 `26 passed, 26 total`(=전부 통과)로
+// 보였고, 140개였던 것이 26개로 줄어든 것을 아무도 대조하지 않았다 —
+// **그 상태로 1.3.3이 프로덕션에 나갔다.**
+//
+// 여기도 같은 함정이 있다: 섹션이 조건부로 스킵되면(`if (TOKEN)`·`SKIP` 분기) 개수만 줄고
+// 마지막 줄은 여전히 `ALL PASS`다. 통과 개수를 사람이 매번 기억할 수는 없으므로 **바닥을 박아둔다.**
+//
+// ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다 —
+//   안 올리면 다음에 섹션이 하나 죽어도 바닥에 안 걸린다.
+// 사유: exp 폴백 2건은 SESSION_JWT_SECRET 없으면 스킵된다
+const MIN_CHECKS = 25;
+{
+  const ran = pass + fail;
+  if (ran < MIN_CHECKS) {
+    fail++;
+    console.log(
+      `  FAIL  가드가 줄었다 — ${ran}개만 돌았다(최소 ${MIN_CHECKS}). 섹션이 스킵됐거나 로드에 실패했다`,
+    );
+  }
+}
+
+console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS})`);
 process.exit(fail === 0 ? 0 : 1);
