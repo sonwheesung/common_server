@@ -97,6 +97,7 @@ BASE_URL=... node tools/_dv_auth.ts                          # 로그인·세션
 BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서버 계약과 맞는지
 node tools/_dv_purchase.ts                                   # 결제 판정·상태전이(DB 불필요). BASE_URL 주면 라우트도
 node tools/_dv_activity.ts                                   # 활성 집계 순수함수(DB 불필요)
+node tools/_dv_contrast.ts                                   # 색 대비 — globals.css를 읽어 계산(DB 불필요)
 
 BASE_URL=... node tools/_e2e_heartbeat.ts                    # ⚠ 하트비트 성공 경로 — 행을 만들고 끝에 지운다
 ```

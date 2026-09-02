@@ -383,7 +383,7 @@ function Button({
     'inline-flex h-9 items-center justify-center gap-1.5 rounded-lg px-3 text-[13px] font-medium transition-colors disabled:opacity-45 disabled:pointer-events-none whitespace-nowrap';
   const variants = {
     default: 'border border-border bg-surface hover:bg-muted',
-    primary: 'bg-accent text-accent-fg hover:brightness-110',
+    primary: 'bg-accent-strong text-accent-fg hover:brightness-110',
     ghost: 'text-fg-muted hover:bg-muted hover:text-fg',
     danger: 'border border-danger/25 text-danger hover:bg-danger-soft',
   };
@@ -500,7 +500,7 @@ function Segmented<T extends string>({
           key={v}
           onClick={() => onChange(v)}
           className={`rounded-md px-3 py-1.5 text-sm transition-colors ${
-            value === v ? 'bg-accent text-accent-fg font-medium' : 'text-fg-muted hover:text-fg'
+            value === v ? 'bg-accent-strong text-accent-fg font-medium' : 'text-fg-muted hover:text-fg'
           }`}
         >
           {label}
