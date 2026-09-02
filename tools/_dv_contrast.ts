@@ -145,9 +145,57 @@ for (const dark of [false, true]) {
   }
 }
 
+// ── ③ 🔴 레이어 밖 `color`가 유틸리티를 무력화하는가 (2026-09-02) ──────────────
+// **이 가드의 가장 큰 구멍이었다.** 위 ②는 토큰 *값*을 계산한다 — 값이 맞아도 그 값을 쓰는
+// **클래스가 안 먹으면** 화면은 여전히 틀린다. 실제로 그랬다:
+//   `input,textarea,select,button { color: inherit }` 가 `@layer` **밖**에 있었고,
+//   레이어 밖 스타일은 레이어 안(= Tailwind `@layer utilities`)을 **특이도와 무관하게 전부 이긴다.**
+//   그래서 primary 버튼의 `text-accent-fg` 가 **한 번도 적용된 적이 없었다** —
+//   배경만 파랗고 글자는 본문색(근검정)이었다. 사용자가 두 번 지적했고 나는 두 번 다
+//   토큰을 고치고 "됐다"고 답했다. **오라클이 맞는 숫자를 틀린 대상에 대고 있었다.**
+//
+// ⚠ CSS 텍스트로 잡을 수 있는 건 여기까지다 — 실제 적용 여부는 브라우저에서만 알 수 있다.
+//   그래서 **원인이 되는 패턴 자체**를 금지한다: 요소 선택자에 거는 `color` 는 반드시 레이어 안에.
+{
+  // `@layer ... { ... }` 블록을 통째로 들어낸 나머지 = 레이어 밖 CSS
+  let unlayered = css;
+  for (;;) {
+    const m = /@layer[^{]*\{/.exec(unlayered);
+    if (!m) break;
+    let depth = 0;
+    let i = m.index + m[0].length - 1;
+    for (; i < unlayered.length; i++) {
+      if (unlayered[i] === '{') depth++;
+      else if (unlayered[i] === '}' && --depth === 0) break;
+    }
+    unlayered = unlayered.slice(0, m.index) + unlayered.slice(i + 1);
+  }
+
+  // 레이어 밖에서 button/input 같은 **요소 선택자**에 color 를 거는 블록을 찾는다.
+  const bad: string[] = [];
+  for (const m of unlayered.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
+    const sel = m[1].trim();
+    const body = m[2];
+    if (!/(^|[\s,(])(button|input|select|textarea)\b/.test(sel)) continue;
+    if (!/(^|[;\s])color\s*:/.test(body)) continue;
+    bad.push(sel.replace(/\s+/g, ' ').slice(0, 60));
+  }
+  check(
+    '레이어 밖에서 button/input 에 color 를 걸지 않는다 (유틸리티를 무력화한다)',
+    bad.length === 0,
+    bad.join(' | '),
+  );
+
+  // 그 리셋이 **사라지지도** 않아야 한다 — 없으면 버튼 글자가 OS 기본색(buttontext)으로 돌아간다.
+  check(
+    'button color 리셋이 @layer base 안에 살아 있다',
+    /@layer\s+base\s*\{[\s\S]*?button\s*\{[\s\S]*?color:\s*inherit/.test(css),
+  );
+}
+
 // ── 🔴 가드가 줄어든 것을 잡는다 ──
 // 조합을 지우면 그 조합은 실패가 아니라 **사라진다** — 오늘 하루 종일 나온 그 함정이다.
-const MIN_CHECKS = 27; // 2026-09-02: accent-strong 2×테마 추가
+const MIN_CHECKS = 29; // 2026-09-02: accent-strong 2×테마 · 레이어 밖 color 2건
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {

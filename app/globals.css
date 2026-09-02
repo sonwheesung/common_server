@@ -92,13 +92,27 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-input,
-textarea,
-select,
-button {
-  font: inherit;
-  letter-spacing: inherit;
-  color: inherit;
+/* 🔴 **반드시 `@layer base` 안에 둔다.** 2026-09-02에 이것 때문에 하루를 썼다.
+   레이어 밖(unlayered) 스타일은 **레이어 안 스타일을 특이도와 무관하게 전부 이긴다.**
+   Tailwind v4의 유틸리티는 `@layer utilities`에 들어가므로, 이 블록이 레이어 밖에 있으면
+   `color: inherit`가 **모든 `text-*` 유틸리티를 무력화**한다.
+
+   실제로 그랬다: primary 버튼이 `bg-accent-strong text-accent-fg`인데 배경만 파랗고
+   글자는 계속 본문색(근검정)이었다. 사용자가 두 번 지적했고, 나는 두 번 다
+   **토큰 값을 고치고 "됐다"고 답했다** — 토큰은 맞았고 클래스가 안 먹고 있었다.
+   `<div>`에 `text-accent-fg`를 주면 흰색이 나오는데 `<button>`에는 안 나오는 것으로 갈렸다.
+
+   ⚠ `color: inherit` 자체는 지우면 안 된다 — 브라우저 기본값이 `color: buttontext`라
+   지우면 버튼 글자가 OS 기본색으로 돌아간다. **자리를 옮기는 게 답이다.** */
+@layer base {
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
 }
 
 /* 입력 요소 포커스 — 키보드 운영자를 위해 지우지 않고 통일한다 */
