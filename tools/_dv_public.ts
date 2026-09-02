@@ -24,6 +24,14 @@ function check(name: string, ok: boolean, detail = '') {
   }
 }
 
+/** 스킵을 **이름으로** 기록한다. 개수만 세면 새 스킵이 옛 스킵 뒤에 숨는다(my-word 세션 지적, 2026-09-02).
+ *  바닥(MIN_CHECKS)은 "몇 개 돌았나"를, 이건 "무엇이 안 돌았나"를 본다 — 둘 다 있어야 한다. */
+const skipped: string[] = [];
+function skip(name: string, why: string) {
+  skipped.push(name);
+  console.log(`  SKIP  ${name} — ${why}`);
+}
+
 const post = (path: string, body: unknown) =>
   fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -89,7 +97,7 @@ if (process.env.CREATE === '1') {
   // 식별자 노출 회피 — ticketId를 돌려주지 않는 계약
   check('tickets 응답에 ticketId 없음', !('ticketId' in j) && !('id' in j));
 } else {
-  console.log('  SKIP  tickets 접수 성공 경로 (CREATE=1 로 실행하면 실제 행을 만든다)');
+  skip('tickets-create', 'CREATE=1 로 실행하면 실제 행을 만든다');
 }
 
 // ── 하트비트 (2026-09-02) ────────────────────────────────────────────────────
@@ -121,6 +129,22 @@ if (process.env.CREATE === '1') {
   check('heartbeat app 쿼리는 무시된다 (여전히 401)', r5.status === 401, `status=${r5.status}`);
 }
 
+// ── 🔴 **예상 밖의 스킵**을 잡는다 (2026-09-02) ──────────────────────────────
+// 바닥(MIN_CHECKS)은 "몇 개 돌았나"를 본다. 그것만으로는 **새 스킵이 옛 스킵 뒤에 숨는다** —
+// 정당한 스킵이 이미 개수를 깎아두면, 다른 섹션이 하나 더 죽어도 바닥 안에 들어올 수 있다.
+// 그래서 개수와 **이름**을 함께 본다(my-word 세션 지적: 개수로 봐주지 말고 이름으로 잡아라).
+//
+// ⚠ 여기 이름들은 **환경 조건부**라 안 도는 게 정상인 것들이다(고장난 것이 아니다).
+//   새 스킵을 추가하면 이 목록에도 등록해야 하고, **등록을 잊으면 여기서 걸린다** — 그게 요점이다.
+const KNOWN_SKIPS = ['tickets-create'];
+{
+  const unknown = skipped.filter((n) => !KNOWN_SKIPS.includes(n));
+  if (unknown.length > 0) {
+    fail++;
+    console.log(`  FAIL  등록되지 않은 스킵: ${unknown.join(', ')} — KNOWN_SKIPS 에 없다`);
+  }
+}
+
 // ── 🔴 가드가 **줄어든 것**을 잡는다 (2026-09-02) ────────────────────────────
 // my_word 세션 실측: jest 스위트 9개 중 7개가 로드조차 안 되고 있었는데, 죽은 스위트의
 // 테스트는 **실패가 아니라 세어지지도 않는다**. 그래서 `26 passed, 26 total`(=전부 통과)로
@@ -144,5 +168,5 @@ const MIN_CHECKS = 14;
   }
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS})`);
+console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS}${skipped.length ? ` · 스킵 ${skipped.length}: ${skipped.join(',')}` : ''})`);
 process.exit(fail === 0 ? 0 : 1);

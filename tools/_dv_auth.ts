@@ -26,6 +26,14 @@ function check(name: string, ok: boolean, detail = '') {
   }
 }
 
+/** 스킵을 **이름으로** 기록한다. 개수만 세면 새 스킵이 옛 스킵 뒤에 숨는다(my-word 세션 지적, 2026-09-02).
+ *  바닥(MIN_CHECKS)은 "몇 개 돌았나"를, 이건 "무엇이 안 돌았나"를 본다 — 둘 다 있어야 한다. */
+const skipped: string[] = [];
+function skip(name: string, why: string) {
+  skipped.push(name);
+  console.log(`  SKIP  ${name} — ${why}`);
+}
+
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -109,7 +117,7 @@ const FORGED = 'eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJmYWtlIiwiYXBwIjoibXl3b3JkIiwiaWF
 {
   const secret = process.env.SESSION_JWT_SECRET ?? '';
   if (secret.length < 32) {
-    console.log('  SKIP  갱신 라이브 검증 (SESSION_JWT_SECRET 필요)');
+    skip('renew-live', 'SESSION_JWT_SECRET 필요');
   } else {
     const b64 = (v: Buffer | string) => Buffer.from(v as Buffer).toString('base64url');
     const sign = (claims: object) => {
@@ -172,8 +180,24 @@ const FORGED = 'eyJhbGciOiJIUzI1NiJ9.eyJzaWQiOiJmYWtlIiwiYXBwIjoibXl3b3JkIiwiaWF
       check('exp: 없는 옛 토큰도 통과 (iat 폴백)', verifySession(legacy(10 * DAY)) !== null);
       check('exp: 없는 옛 토큰이 TTL 을 넘겼으면 거부', verifySession(legacy(181 * DAY)) === null);
     } else {
-      console.log('  SKIP  exp 폴백 — SESSION_JWT_SECRET 미설정(로컬)');
+      skip('exp-fallback', 'SESSION_JWT_SECRET 미설정(로컬)');
     }
+  }
+}
+
+// ── 🔴 **예상 밖의 스킵**을 잡는다 (2026-09-02) ──────────────────────────────
+// 바닥(MIN_CHECKS)은 "몇 개 돌았나"를 본다. 그것만으로는 **새 스킵이 옛 스킵 뒤에 숨는다** —
+// 정당한 스킵이 이미 개수를 깎아두면, 다른 섹션이 하나 더 죽어도 바닥 안에 들어올 수 있다.
+// 그래서 개수와 **이름**을 함께 본다(my-word 세션 지적: 개수로 봐주지 말고 이름으로 잡아라).
+//
+// ⚠ 여기 이름들은 **환경 조건부**라 안 도는 게 정상인 것들이다(고장난 것이 아니다).
+//   새 스킵을 추가하면 이 목록에도 등록해야 하고, **등록을 잊으면 여기서 걸린다** — 그게 요점이다.
+const KNOWN_SKIPS = ['renew-live', 'exp-fallback'];
+{
+  const unknown = skipped.filter((n) => !KNOWN_SKIPS.includes(n));
+  if (unknown.length > 0) {
+    fail++;
+    console.log(`  FAIL  등록되지 않은 스킵: ${unknown.join(', ')} — KNOWN_SKIPS 에 없다`);
   }
 }
 
@@ -200,5 +224,5 @@ const MIN_CHECKS = 25;
   }
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS})`);
+console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS}${skipped.length ? ` · 스킵 ${skipped.length}: ${skipped.join(',')}` : ''})`);
 process.exit(fail === 0 ? 0 : 1);

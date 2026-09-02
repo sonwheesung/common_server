@@ -23,6 +23,14 @@ function check(name: string, ok: boolean, detail = '') {
   }
 }
 
+/** 스킵을 **이름으로** 기록한다. 개수만 세면 새 스킵이 옛 스킵 뒤에 숨는다(my-word 세션 지적, 2026-09-02).
+ *  바닥(MIN_CHECKS)은 "몇 개 돌았나"를, 이건 "무엇이 안 돌았나"를 본다 — 둘 다 있어야 한다. */
+const skipped: string[] = [];
+function skip(name: string, why: string) {
+  skipped.push(name);
+  console.log(`  SKIP  ${name} — ${why}`);
+}
+
 const get = (path: string, token?: string) =>
   fetch(`${BASE}/api/admin/${path}`, token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
 
@@ -55,7 +63,7 @@ for (const route of ROUTES) {
   const r = await fetch(`${BASE}/api/cron/purge`);
   const isDeployed = BASE.startsWith('https://');
   if (isDeployed) check('cron/purge 무인증 401', r.status === 401, `status=${r.status}`);
-  else console.log(`  SKIP  cron/purge (로컬은 CRON_SECRET 미설정 시 허용 — 배포 URL로 실행할 것)`);
+  else skip('cron-purge', '로컬은 CRON_SECRET 미설정 시 허용 — 배포 URL로 실행할 것');
 }
 
 if (TOKEN) {
@@ -66,7 +74,7 @@ if (TOKEN) {
   const app = codes[0];
 
   if (!app) {
-    console.log('  SKIP  앱별 검증 (등록된 앱 없음 — tools/seed.ts 로 먼저 등록)');
+    skip('per-app', '등록된 앱 없음 — tools/seed.ts 로 먼저 등록');
   } else {
     // ── stats: 알림·배선 상태 ─────────────────────────────────────────────
     const sr = await get(`stats?app=${app}`, TOKEN);
@@ -180,13 +188,13 @@ if (TOKEN) {
     // 여긴 1배포 N앱이라 id만으로 UPDATE하면 다른 앱 티켓에 답변이 박힌다. 성공하면 안 되는 호출만 던진다.
     const someTicket = (t.tickets ?? [])[0]?.id;
     if (!someTicket) {
-      console.log('  SKIP  PATCH 앱 스코프 (문의가 없음)');
+      skip('patch-scope', '문의가 없음');
     } else {
       const noApp = await patch('tickets', TOKEN, { id: someTicket, status: 'open' });
       check('tickets PATCH app 누락 400', noApp.status === 400, `status=${noApp.status}`);
       const other = codes.find((c) => c !== app);
       if (!other) {
-        console.log('  SKIP  PATCH 타앱 스코프 (등록 앱이 하나뿐)');
+        skip('patch-cross-app', '등록 앱이 하나뿐');
       } else {
         const cross = await patch('tickets', TOKEN, { id: someTicket, app: other, status: 'open' });
         check(`tickets PATCH 타앱(${other}) id 404`, cross.status === 404, `status=${cross.status}`);
@@ -194,7 +202,7 @@ if (TOKEN) {
     }
   }
 } else {
-  console.log('  SKIP  정상 경로 (ADMIN_TOKEN 을 주면 검증)');
+  skip('admin-happy-path', 'ADMIN_TOKEN 을 주면 검증');
 }
 
 // ── 주체 2행 구조 판정 (2026-09-02) ─────────────────────────────────────────
@@ -211,7 +219,7 @@ if (TOKEN) {
   const aj = (await ar.json()) as { apps?: { appCode: string }[] };
   const codes = (aj.apps ?? []).map((a) => a.appCode);
   if (codes.length === 0) {
-    console.log('  SKIP  주체 2행 판정 (등록된 앱 없음)');
+    skip('dual-count', '등록된 앱 없음');
   } else {
     let dualSeen = 0;
     let singleSeen = 0;
@@ -251,6 +259,22 @@ if (TOKEN) {
   }
 }
 
+// ── 🔴 **예상 밖의 스킵**을 잡는다 (2026-09-02) ──────────────────────────────
+// 바닥(MIN_CHECKS)은 "몇 개 돌았나"를 본다. 그것만으로는 **새 스킵이 옛 스킵 뒤에 숨는다** —
+// 정당한 스킵이 이미 개수를 깎아두면, 다른 섹션이 하나 더 죽어도 바닥 안에 들어올 수 있다.
+// 그래서 개수와 **이름**을 함께 본다(my-word 세션 지적: 개수로 봐주지 말고 이름으로 잡아라).
+//
+// ⚠ 여기 이름들은 **환경 조건부**라 안 도는 게 정상인 것들이다(고장난 것이 아니다).
+//   새 스킵을 추가하면 이 목록에도 등록해야 하고, **등록을 잊으면 여기서 걸린다** — 그게 요점이다.
+const KNOWN_SKIPS = ['cron-purge', 'per-app', 'patch-scope', 'patch-cross-app', 'admin-happy-path', 'dual-count'];
+{
+  const unknown = skipped.filter((n) => !KNOWN_SKIPS.includes(n));
+  if (unknown.length > 0) {
+    fail++;
+    console.log(`  FAIL  등록되지 않은 스킵: ${unknown.join(', ')} — KNOWN_SKIPS 에 없다`);
+  }
+}
+
 // ── 🔴 가드가 **줄어든 것**을 잡는다 (2026-09-02) ────────────────────────────
 // my_word 세션 실측: jest 스위트 9개 중 7개가 로드조차 안 되고 있었는데, 죽은 스위트의
 // 테스트는 **실패가 아니라 세어지지도 않는다**. 그래서 `26 passed, 26 total`(=전부 통과)로
@@ -274,5 +298,5 @@ const MIN_CHECKS = 45;
   }
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS})`);
+console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail} (실행 ${pass + fail} / 최소 ${MIN_CHECKS}${skipped.length ? ` · 스킵 ${skipped.length}: ${skipped.join(',')}` : ''})`);
 process.exit(fail === 0 ? 0 : 1);
