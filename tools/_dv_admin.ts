@@ -197,5 +197,59 @@ if (TOKEN) {
   console.log('  SKIP  정상 경로 (ADMIN_TOKEN 을 주면 검증)');
 }
 
+// ── 주체 2행 구조 판정 (2026-09-02) ─────────────────────────────────────────
+// 로그인 앱이 비로그인 활성을 재려고 기기 주체를 따로 두면 로그인한 사람은 device 1 + user 1 로
+// **영구히 2행**이 된다(병합 개념 없음). 그 앱의 누적 `사용자` 수는 부풀어 있으므로 앱끼리
+// 나란히 놓으면 그 앱만 과대평가된다 — 콘솔이 메타 줄과 타일 sub 로 그걸 말한다.
+//
+// ⚠ 판정 축은 **앱 코드가 아니라 데이터 모양**이다. 하드코딩하면 같은 구조의 앱이 새로 생겨도
+//   경고가 안 뜨고, 그 앱이 구조를 바꿔도 경고가 안 사라진다.
+//   그래서 **모든 앱**을 돈다 — 한 앱만 보면 하드코딩된 판정도 그 앱에서는 맞게 나온다.
+//   (지금 등록된 4개 중 2행 구조는 조각뿐이라, 단일 종류 앱들이 대조군 역할을 한다.)
+if (TOKEN) {
+  const ar = await get('apps', TOKEN);
+  const aj = (await ar.json()) as { apps?: { appCode: string }[] };
+  const codes = (aj.apps ?? []).map((a) => a.appCode);
+  if (codes.length === 0) {
+    console.log('  SKIP  주체 2행 판정 (등록된 앱 없음)');
+  } else {
+    let dualSeen = 0;
+    let singleSeen = 0;
+    for (const code of codes) {
+      const r = await get(`stats?app=${code}`, TOKEN);
+      const j = (await r.json()) as {
+        kpi?: { subjects: number; subjectKinds?: Record<string, number>; subjectsDualCounted?: boolean };
+      };
+      const kinds = j.kpi?.subjectKinds;
+      if (!kinds || !j.kpi || typeof j.kpi.subjectsDualCounted !== 'boolean') {
+        check(`${code}: subjectKinds·subjectsDualCounted 가 온다`, false, JSON.stringify(j.kpi));
+        continue;
+      }
+      const nonZero = Object.values(kinds).filter((n) => Number(n) > 0).length;
+      const expected = nonZero > 1;
+      check(
+        `${code}: 2행 판정이 데이터 모양과 일치`,
+        j.kpi.subjectsDualCounted === expected,
+        `kinds=${JSON.stringify(kinds)} dual=${j.kpi.subjectsDualCounted} expected=${expected}`,
+      );
+      // 합이 누적 사용자 수와 어긋나면 둘 중 하나가 필터를 다르게 걸고 있다는 뜻이다
+      // (예: 한쪽만 탈퇴자를 빼면 화면의 두 숫자가 조용히 안 맞는다).
+      const sum = Object.values(kinds).reduce((a, b) => a + Number(b), 0);
+      check(`${code}: subjectKinds 합 = kpi.subjects`, sum === j.kpi.subjects, `sum=${sum} total=${j.kpi.subjects}`);
+      if (expected) dualSeen++;
+      else singleSeen++;
+    }
+    // 대조군이 둘 다 있어야 이 검사에 의미가 있다. 없으면 통과가 아니라 **못 봤다**고 말한다 —
+    // "전부 단일 종류"인 상태에서는 하드코딩된 판정도 이 가드를 통과한다.
+    if (dualSeen === 0 || singleSeen === 0) {
+      console.log(
+        `  NOTE  2행/단일 대조군이 한쪽뿐 (dual=${dualSeen} single=${singleSeen}) — 하드코딩 여부는 이 상태에서 판별 불가`,
+      );
+    } else {
+      check('2행 앱과 단일 앱이 둘 다 있어 판정이 실제로 갈렸다', true, `dual=${dualSeen} single=${singleSeen}`);
+    }
+  }
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILED'} — pass=${pass} fail=${fail}`);
 process.exit(fail === 0 ? 0 : 1);

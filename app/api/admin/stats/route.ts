@@ -63,7 +63,7 @@ export async function GET(req: Request) {
     const activeCutoff = new Date(now - ACTIVE_DAYS * 86400_000);
     const onlineCutoff = new Date(now - ONLINE_WINDOW_MIN * 60_000);
 
-    const [subjTotal, subjActive, subjOnline, subjNew, tkTotal, tkPending, tk24, oldest, subs, byReason, recent, errToday, setting, activity] =
+    const [subjTotal, subjActive, subjOnline, subjNew, subjKinds, tkTotal, tkPending, tk24, oldest, subs, byReason, recent, errToday, setting, activity] =
       await Promise.all([
         db.select({ n: count() }).from(subjects).where(eq(subjects.appCode, appCode)),
         db
@@ -77,6 +77,17 @@ export async function GET(req: Request) {
           .from(subjects)
           .where(and(eq(subjects.appCode, appCode), isNull(subjects.deletedAt), gte(subjects.lastSeenAt, onlineCutoff))),
         db.select({ n: count() }).from(subjects).where(and(eq(subjects.appCode, appCode), gte(subjects.createdAt, day))),
+        // 주체 종류별 분해 — **`사용자` 수를 앱끼리 비교해도 되는가**를 화면이 판정할 수 있게 한다.
+        // 로그인 앱이 비로그인 DAU를 위해 기기 subject를 **따로** 두면, 로그인한 사람은 device 1행 +
+        // user 1행으로 **영구히 2행**이 된다(병합 개념이 없다). 그런 앱의 누적 사용자 수는 부풀어
+        // 있으므로 다른 앱과 나란히 놓으면 그 앱만 과대평가된다.
+        // ⚠ 앱 코드를 하드코딩하지 않는다 — **구조에서 판정**한다. 같은 모양의 앱이 나중에 또 생기면
+        //   그때도 자동으로 잡히고, 조각이 구조를 바꾸면 경고가 저절로 사라진다.
+        db
+          .select({ kind: subjects.kind, n: count() })
+          .from(subjects)
+          .where(eq(subjects.appCode, appCode))
+          .groupBy(subjects.kind),
         db.select({ n: count() }).from(tickets).where(eq(tickets.appCode, appCode)),
         db
           .select({ n: count() })
@@ -243,6 +254,21 @@ export async function GET(req: Request) {
       ok: true,
       kpi: {
         subjects: one(subjTotal),
+        /**
+         * 주체 종류별 분해 + **앱끼리 비교해도 되는가**.
+         *
+         * `device`와 `user`가 **둘 다** 있으면 그 앱은 로그인 사용자에게 subject를 2행 만든다
+         * (비로그인 DAU용 기기 subject를 따로 두는 구조). 병합 개념이 없으므로 그 2행은 영구적이고,
+         * 그래서 **누적 사용자 수가 그 앱만 부풀어 있다** — 다른 앱과 나란히 놓으면 과대평가된다.
+         * 화면이 그걸 말하지 않으면 다음 사람이 "조각이 제일 크다"로 읽는다.
+         *
+         * ⚠ 앱 코드가 아니라 **데이터 모양**으로 판정한다. 같은 구조의 앱이 또 생기면 자동으로 잡히고,
+         *   그 앱이 구조를 바꾸면 경고가 저절로 사라진다.
+         * ⚠ DAU는 이 왜곡을 **거의 안 받는다** — 하루에 한 종류만 찍히고, 로그인 전환일에만 2행이다
+         *   (사용자당 평생 1회). 부풀어 있는 건 **누적 수**다.
+         */
+        subjectKinds: Object.fromEntries(subjKinds.map((r) => [r.kind, r.n])) as Record<string, number>,
+        subjectsDualCounted: subjKinds.filter((r) => r.n > 0).length > 1,
         // ⚠ lastSeenAt 기반. 2026-09-01 이전엔 이 컬럼이 등록 시점에만 갱신돼
         //   사실상 "최근 14일 신규 설치"였다. 하트비트가 붙은 뒤에야 제 뜻을 갖는다 —
         //   사람이 보는 활성 지표는 아래 `activity`를 쓴다.

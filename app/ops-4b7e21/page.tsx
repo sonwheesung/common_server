@@ -109,6 +109,10 @@ type Stats = {
     subjectsOnline: number;
     onlineWindowMin: number;
     subjectsNew24h: number;
+    /** 주체 종류별 수(`user` · `device`). 서버가 데이터 모양에서 낸다 — 앱 코드는 안 본다. */
+    subjectKinds: Record<string, number>;
+    /** 종류가 둘 이상 = 로그인 사용자가 subject 2행 → **누적 사용자 수가 부풀어 있다**(앱 간 비교 불가). */
+    subjectsDualCounted: boolean;
     subscribers: number;
     tickets: number;
     ticketsPending: number;
@@ -1342,6 +1346,22 @@ function Overview({
         <Src>자체 집계</Src> · 활성 구독은 <Src>RevenueCat 판정</Src> · 웹훅 거부는 <Src>수신 로그</Src>
         <br />
         사용자 수는 <strong className="font-medium text-fg">누적 가입자</strong>입니다 — 아래 활성 사용자와 다른 것을 재고 있습니다.
+        {/* 🔴 이 앱만 주체가 2행인데 화면이 말하지 않으면, 다음 사람이 앱끼리 나란히 놓고
+            "여기가 제일 크다"로 읽는다. 판정은 서버가 데이터 모양으로 한다(앱 코드 하드코딩 아님). */}
+        {kpi?.subjectsDualCounted && (
+          <>
+            <br />
+            <span className="text-warn">
+              ⚠ 이 앱은 <strong className="font-medium">로그인 사용자에게 주체가 2행</strong>입니다(
+              {Object.entries(kpi.subjectKinds)
+                .map(([k, n]) => `${k} ${n.toLocaleString()}`)
+                .join(' · ')}
+              ). 비로그인 활성을 재려고 기기 주체를 따로 두는 구조이고 <strong className="font-medium">병합 개념이 없어</strong>{' '}
+              누적 수가 부풀어 있습니다 — <strong className="font-medium">다른 앱과 이 숫자를 나란히 놓지 마세요.</strong>{' '}
+              아래 활성 사용자는 이 왜곡을 거의 안 받습니다(하루에 한 종류만 찍히고, 로그인 전환일에만 2행 · 사용자당 평생 1회).
+            </span>
+          </>
+        )}
       </p>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1364,7 +1384,11 @@ function Overview({
           value={kpi ? kpi.subjects.toLocaleString() : '—'}
           /* ⚠ 예전엔 여기에 "최근 14일 접속"을 적었는데, lastSeenAt이 등록 시점에만 갱신돼
              실제로는 "최근 14일 신규 설치"였다. 활성은 아래 전용 섹션이 맡는다. */
-          sub={kpi ? `신규 +${kpi.subjectsNew24h} (24시간)` : undefined}
+          sub={
+            kpi
+              ? `신규 +${kpi.subjectsNew24h} (24시간)${kpi.subjectsDualCounted ? ' · ⚠ 주체 2행 구조' : ''}`
+              : undefined
+          }
         />
         <Stat
           icon={CreditCard}

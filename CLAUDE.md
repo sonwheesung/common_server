@@ -134,12 +134,35 @@ lib/                             admin·apps·auth·revenuecat·rcPull·entitlem
 | app_code | 앱 | SDK 복사본 | 상태 |
 |----------|-----|-----------|------|
 | `myword` | `C:\project\my_word\my_word` (Expo, 로그인 없음) | **2026-08-06** | 문의는 이미 공통 서버로 들어온다. 하지만 최초판 SDK라 **신원(deviceId)이 없다** — 문의가 전부 익명이라 답변을 돌려줄 경로가 없고 DAU도 안 잡힌다 |
-| `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-19 | 2026-08-09 등록. 문의는 **로그인 필수** 구조. ⚠ 비로그인 DAU를 위해 기기 subject를 따로 두므로 **로그인한 사람은 subject가 2행**이다 — 콘솔의 `사용자` 수가 조각만 부풀려 보인다(DAU는 전환일 1회만 중복). 병합 개념은 없다 |
+| `jogak` | 일기 앱 (Expo, Android `com.son0925.jogak`, 구글 로그인) | 2026-08-19 | 2026-08-09 등록. 문의는 **로그인 필수** 구조. ⚠ 주체가 2행이다(아래 정의 참조) — 콘솔이 `subjectsDualCounted`로 **스스로 판정해 경고를 띄운다**(앱 코드 하드코딩 아님) |
 | `linkmemo` | `C:\project\link_memo` (Expo, 로그인 없음) | 2026-08-14 | `ensureDeviceSession()` 보유 — 하트비트를 붙이는 기준 구현체 |
 | `idearepository` | `C:\project\idea_repository` (Expo, 로그인 없음) | 2026-08-14 | 2026-08-17 등록. linkmemo와 같은 구조 |
 
 ⚠ **이미 스토어에 나간 my_word 버전은 계속 배구 서버를 호출한다.** 배구의 `ANON_TICKET_PROJECTS`에서
 `myword`를 빼면 구버전 문의가 죽는다. 구버전 수명이 다할 때까지 유지할 것.
+
+**조각 DAU 정의** (2026-09-02, diary 세션 실측 — `signedIn ? commonServer : deviceServer`):
+
+```
+그날 활성으로 찍힌 subject 수
+  · 비로그인      → device subject 1행
+  · 로그인        → user subject 1행  (그날 device 는 안 찍는다)
+  · 로그인 전환일 → 2행 (사용자당 평생 1회)
+  · 연령 미달     → 0행 (식별자를 아예 발급하지 않는다)
+```
+
+🔴 그래서 **누적 `사용자` 수만 부풀어 있고 DAU는 거의 정확하다.** 둘을 같이 취급하면 안 된다.
+
+⚠ **조각에는 "기기 세션으로 통일"을 권하지 마라**(2026-09-02에 내가 그렇게 권했다가 정정받았다). 이유가 둘이다:
+- 하트비트를 기기로 고정하면 로그인 사용자는 콜드 스타트(user) + 웜 스타트(device)로 **매일 2행**이 된다.
+  "평생 1회"였던 중복이 매일이 되고, 하필 **가장 열심히 쓰는 사용자**에게 그렇게 된다.
+- 부팅까지 전부 기기로 통일하면 DAU는 제일 깨끗해지지만 **구글 토큰이 갱신을 못 받는다** —
+  슬라이딩 갱신 지점이 `bootstrap`·`heartbeat` 둘뿐이라, 문의·구독을 180일 안 여는 사용자의 로그인이 조용히 죽는다.
+  ⚠ 이건 조각만의 문제가 아니라 **갱신 지점이 둘뿐인 우리 설계의 성질**이다. 세션을 나눠 쓰는 앱이 또 생기면 같은 함정을 밟는다.
+
+⚠ 두 인스턴스(`cs_session_jogak` / `cs_devsession_jogak`)는 **의도적으로 분리**돼 있다 — 합치면 기기 토큰이
+로그인 칸에 들어가 `/auth/me`가 200을 주고, 그러면 문의 로그인 필수가 뚫리고 **연령 게이트가 우회되고**
+RC가 기기 subject에 붙는다.
 
 ⚠ **jogak 문의는 디스코드 알림이 안 간다.**(콘솔 대시보드의 "배선 상태"가 이걸 표시한다) `DISCORD_TICKET_WEBHOOK_URL_JOGAK`(또는 앱 공통
 `DISCORD_TICKET_WEBHOOK_URL`)이 없어서 `notify`가 no-op이다. 콘솔을 직접 열어보기 전까지
