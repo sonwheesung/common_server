@@ -112,6 +112,19 @@ export function findList(payload: unknown): unknown[] | null {
   return walk(payload, 0);
 }
 
+/** 공공 API 응답에 `&apos;` `&amp;` 같은 HTML 엔티티가 그대로 실려 온다(K-Startup 실측).
+ *  화면에 날것으로 뜨면 제목이 깨져 보이므로 저장 전에 되돌린다. */
+export function unescapeEntities(s: string | null): string | null {
+  if (!s) return s;
+  return s
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&'); // 🔴 &amp; 는 **마지막**에 — 먼저 풀면 &amp;lt; 가 < 로 이중 복원된다
+}
+
 /** 여러 후보 키 중 처음 값이 있는 것. 공공 API는 같은 뜻에 다른 이름을 쓴다. */
 const pick = (row: Record<string, unknown>, keys: string[]): string | null => {
   for (const k of keys) {
@@ -123,38 +136,54 @@ const pick = (row: Record<string, unknown>, keys: string[]): string | null => {
 
 // ───────────────────────── 어댑터 ─────────────────────────
 //
-// ⚠ **2026-09-07 현재 어느 어댑터도 실제 응답으로 검증되지 않았다.** `DATA_GO_KR_SERVICE_KEY`가
-//    아직 없어서다(`docs/NEXT.md §0`). 그래서 필드 이름을 **후보 목록**으로 두고, 아무것도 못 읽으면
-//    던진다 — 첫 실행의 `last_error`가 실제 응답의 모양을 알려주고, 그때 이 목록을 좁힌다.
-//    🔴 "빈 목록을 성공으로 기록"하지 않는 것이 이 설계의 전부다.
+// ✅ **2026-09-07 실제 응답으로 검증했다**(K-Startup 개발계정 승인 직후 로컬 호출).
+//    추측했던 camelCase 후보(`pblancNm` 등)는 **전부 틀렸다** — 실제는 snake_case 약어다.
+//
+//    🔴 그 과정에서 잡은 함정 하나: 응답 행에 `id` 필드가 있는데 그건 **페이지 안 순번(1,2,3…)** 이다.
+//       중복 키로 쓰면 매일 **다른 공고가 같은 줄을 덮어써서** 목록이 3건에서 안 늘어난다.
+//       진짜 고유 키는 `pbanc_sn`(공고 일련번호)이다. 후보 목록에 'id'를 남겨두면 안 되는 이유다.
 
 export type Adapter = (rows: unknown[]) => NormalizedItem[];
 
-/** 지원사업 공고(기업마당·K-Startup 계열). 두 API의 필드명이 달라 후보를 합쳐 둔다. */
+/**
+ * 지원사업 공고. **K-Startup 응답으로 검증된 필드명**(2026-09-07)에 기업마당 계열 후보를 함께 둔다.
+ *
+ * 🔴 `externalId`에 `id`를 **절대 넣지 않는다** — 그건 페이지 순번이다(위 주석).
+ */
 export const grantAdapter: Adapter = (rows) =>
   rows.flatMap((raw) => {
     const row = raw as Record<string, unknown>;
-    const title = pick(row, ['pblancNm', 'bizPbancNm', 'intgPbancBizNm', 'title', 'pbancNm']);
-    const link = pick(row, ['pblancUrl', 'detailUrl', 'url', 'link', 'pbancDetlUrl', 'dtlUrl']);
+    // 공고명 — K-Startup `biz_pbanc_nm` / 통합공고명 `intg_pbanc_biz_nm` / 기업마당 `pblancNm`
+    const title = unescapeEntities(pick(row, ['biz_pbanc_nm', 'intg_pbanc_biz_nm', 'pblancNm', 'title']));
+    const link = pick(row, ['detl_pg_url', 'biz_gdnc_url', 'pblancUrl', 'detailUrl', 'url']);
     if (!title || !link) return []; // 제목·링크가 없으면 항목이 아니다
-    const url = link.startsWith('http') ? link : `https://www.bizinfo.go.kr${link}`;
-    const period = pick(row, ['reqstBeginEndDe', 'pbancRcptBgngDt', 'applicationPeriod', 'rcptPd']);
-    const { startsAt, endsAt } = parsePeriod(period);
-    const endOnly = parseDate(pick(row, ['pbancRcptEndDt', 'reqstEndDe', 'endDate']));
-    const startOnly = parseDate(pick(row, ['pbancRcptBgngDt', 'reqstBeginDe', 'startDate']));
+    const url = link.startsWith('http') ? link : `https://${link}`;
+
+    // 🔴 고유 키. `pbanc_sn`이 정본이고, 없으면 정규화한 URL로 떨어진다.
+    const externalId = pick(row, ['pbanc_sn', 'pblancId']) ?? normalizeUrl(url);
+
+    const { startsAt: pStart, endsAt: pEnd } = parsePeriod(pick(row, ['reqstBeginEndDe', 'applicationPeriod']));
+
     return [
       {
-        externalId: pick(row, ['pblancId', 'pbancSn', 'id']) ?? normalizeUrl(url),
+        externalId,
         title,
         url: normalizeUrl(url),
-        summary: clipSummary(pick(row, ['bsnsSumryCn', 'pbancCtnt', 'summary', 'cn'])),
+        summary: clipSummary(unescapeEntities(pick(row, ['pbanc_ctnt', 'bsnsSumryCn', 'summary']))),
         author: null,
-        publishedAt: parseDate(pick(row, ['creatPnttm', 'regDt', 'pbancNtrpRgstDt'])),
-        startsAt: startsAt ?? startOnly,
-        endsAt: endsAt ?? endOnly,
-        tags: [pick(row, ['pldirSportRealmLclasCodeNm', 'supportRealm', 'bizGbn']), pick(row, ['jrsdInsttNm', 'excInsttNm', 'organ'])].filter(
-          (x): x is string => !!x,
-        ),
+        publishedAt: null, // K-Startup은 등록일을 안 준다 — 없는 값을 지어내지 않는다
+        startsAt: parseDate(pick(row, ['pbanc_rcpt_bgng_dt', 'reqstBeginDe'])) ?? pStart,
+        endsAt: parseDate(pick(row, ['pbanc_rcpt_end_dt', 'reqstEndDe'])) ?? pEnd,
+        // 태그는 **화면에서 걸러 읽는 축**이다: 분야 · 지역 · 업력 요건.
+        // 업력(`biz_enyy`)이 특히 값지다 — "창업 3년 이내"가 우리 자격의 병목이라서다.
+        // ⚠ 태그에도 엔티티가 실려 온다(`기술개발(R&amp;D)` 실측) — 제목·요약만 풀면 여기서 새어 나온다.
+        tags: [
+          pick(row, ['supt_biz_clsfc', 'pldirSportRealmLclasCodeNm']),
+          pick(row, ['supt_regin']),
+          pick(row, ['pbanc_ntrp_nm', 'jrsdInsttNm']),
+        ]
+          .map((x) => unescapeEntities(x))
+          .filter((x): x is string => !!x),
       },
     ];
   });
@@ -189,8 +218,12 @@ export function buildRequestUrl(config: Record<string, unknown>): string | null 
   const endpoint = typeof config.endpoint === 'string' ? config.endpoint : '';
   if (!endpoint) return null;
   const keyEnv = typeof config.keyEnv === 'string' ? config.keyEnv : '';
-  const key = keyEnv ? (process.env[keyEnv] ?? '') : ''; // 호출 시점 읽기(규약)
-  if (keyEnv && !key) return null;
+  const raw = keyEnv ? (process.env[keyEnv] ?? '') : ''; // 호출 시점 읽기(규약)
+  if (keyEnv && !raw) return null;
+  // 🔴 공공데이터포털은 인증키를 **Encoding·Decoding 두 벌**로 준다. 아래에서 `searchParams.set`이
+  //    다시 인코딩하므로, Encoding 키를 그대로 넣으면 `%2F`가 `%252F`가 되어 인증이 깨진다.
+  //    포털 안내조차 "둘 중 되는 걸 쓰라"고만 한다 — 그래서 **어느 쪽을 넣어도 되게** 여기서 정규화한다.
+  const key = /%[0-9A-Fa-f]{2}/.test(raw) ? decodeURIComponent(raw) : raw;
   const u = new URL(endpoint);
   const params = (config.params ?? {}) as Record<string, string>;
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, String(v));

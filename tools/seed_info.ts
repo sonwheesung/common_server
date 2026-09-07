@@ -51,7 +51,14 @@ const SOURCES = [
       endpoint: endpoints.get('kstartup') ?? '',
       keyEnv: 'DATA_GO_KR_SERVICE_KEY', // 🟢 기업마당과 **같은 키**다(둘 다 data.go.kr)
       keyParam: 'serviceKey',
-      params: { dataType: 'json', numOfRows: '100' },
+      // 🔴 `cond[rcrt_prgs_yn::EQ]=Y` 가 **핵심이다** — 없으면 29,991건(역대 전체)이 오고,
+      //    있으면 232건(모집 중)만 온다(2026-09-07 실측). 마감 지난 공고를 매일 긁어올 이유가 없다.
+      params: {
+        returnType: 'json',
+        page: '1',
+        perPage: '100',
+        'cond[rcrt_prgs_yn::EQ]': 'Y',
+      },
     },
   },
 ];

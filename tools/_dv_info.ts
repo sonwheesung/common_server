@@ -13,7 +13,18 @@
 //    경로 간 서로 다른 두 코드가 같은 사실에 같은 답을 내는가  ← 목록 건수 vs 필터 조합
 export {};
 
-import { clipSummary, daysLeft, findList, normalizeUrl, parseDate, parsePeriod, redact, SUMMARY_MAX } from '../lib/info.ts';
+import {
+  clipSummary,
+  daysLeft,
+  findList,
+  grantAdapter,
+  normalizeUrl,
+  parseDate,
+  parsePeriod,
+  redact,
+  SUMMARY_MAX,
+  unescapeEntities,
+} from '../lib/info.ts';
 
 const BASE = (process.env.BASE_URL ?? '').replace(/\/$/, '');
 const TOKEN = process.env.ADMIN_TOKEN ?? '';
@@ -90,6 +101,42 @@ console.log(`[_dv_info] ${BASE || '(순수 계산만)'}\n`);
   check('중첩된 응답에서 목록을 찾는다', (findList({ response: { body: { items: { item: [{ a: 1 }] } } } }) ?? []).length === 1);
   check('목록이 없으면 null이다(빈 배열이 아니다)', findList({ response: { body: {} } }) === null);
   check('원시값 배열은 목록으로 치지 않는다', findList({ x: [1, 2, 3] }) === null);
+}
+
+// ── ④-b 🔴 지원사업 어댑터 — **실제 K-Startup 응답 모양**으로 고정한다 ──────────
+// 2026-09-07 실측 필드명이다. 여기가 조용히 깨지면 목록이 통째로 비거나(제목 없음)
+// **매일 같은 3줄이 덮어써진다**(순번을 키로 쓰는 사고). 그 둘을 여기서 못 박는다.
+{
+  const real = [
+    {
+      id: 1, // 🔴 페이지 순번이다. 이걸 키로 쓰면 안 된다 — 아래에서 그걸 검사한다
+      pbanc_sn: '179130',
+      biz_pbanc_nm: '2026년 창업 페스티벌 &apos;창업 아이디어 경진대회&apos; 참가자 모집',
+      detl_pg_url: 'https://www.k-startup.go.kr/web/contents/bizpbanc-ongoing.do?schM=view&pbancSn=179130',
+      pbanc_ctnt: '안녕하십니까. 참가자를 모집 합니다.',
+      pbanc_rcpt_bgng_dt: '20260901',
+      pbanc_rcpt_end_dt: '20260910',
+      supt_biz_clsfc: '기술개발(R&amp;D)',
+      supt_regin: '전국',
+      pbanc_ntrp_nm: '서울창업센터 관악',
+    },
+    { id: 2, pbanc_sn: '179126', biz_pbanc_nm: '두 번째 공고', detl_pg_url: 'https://x.kr/b', pbanc_rcpt_end_dt: '20260916' },
+  ];
+  const out = grantAdapter(real);
+  check('K-Startup 실제 응답에서 2건을 읽는다', out.length === 2, `n=${out.length}`);
+  // 🔴 이 검사가 이 파일에서 제일 중요하다. 'id'(1,2,3…)를 키로 쓰면 매일 같은 줄을 덮어써
+  //    목록이 영원히 3건에서 안 늘어난다 — 오류도 안 나고 조용히 그렇게 된다.
+  check('고유 키는 pbanc_sn 이다 (페이지 순번 id 가 아니다)', out[0]?.externalId === '179130', String(out[0]?.externalId));
+  check('두 항목의 키가 서로 다르다', out[0]?.externalId !== out[1]?.externalId);
+  check('제목의 HTML 엔티티가 풀린다', out[0]?.title.includes("'") && !out[0]!.title.includes('&apos;'), out[0]?.title);
+  check('태그의 HTML 엔티티도 풀린다', out[0]?.tags.some((t) => t === '기술개발(R&D)'), JSON.stringify(out[0]?.tags));
+  check('접수 시작·마감을 YYYYMMDD 에서 읽는다', !!out[0]?.startsAt && !!out[0]?.endsAt);
+  check('마감이 시작보다 뒤다', (out[0]!.endsAt!.getTime() > out[0]!.startsAt!.getTime()));
+  check('지역 태그가 실린다', out[0]?.tags.includes('전국'), JSON.stringify(out[0]?.tags));
+  // 대조군 — 제목이나 링크가 없는 행은 버린다(항목이 아니다)
+  check('제목 없는 행은 버린다', grantAdapter([{ pbanc_sn: '1', detl_pg_url: 'https://x.kr' }]).length === 0);
+  check('링크 없는 행은 버린다', grantAdapter([{ pbanc_sn: '1', biz_pbanc_nm: '제목만' }]).length === 0);
+  check('엔티티 복원은 &amp; 를 마지막에 푼다', unescapeEntities('&amp;lt;') === '&lt;', String(unescapeEntities('&amp;lt;')));
 }
 
 // ── ⑤ 시크릿 가리기 — last_error는 화면·로그에 그대로 나간다 ────────────────
@@ -185,7 +232,7 @@ const KNOWN_SKIPS = ['route-cross-check', 'route-fail-closed'];
 
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다(CLAUDE.md).
 //   BASE_URL 없이 돌리면 순수 계산만 도므로 바닥이 그 개수다.
-const MIN_CHECKS = BASE && TOKEN ? 35 : 24; // 2026-09-07: 수집원 존재 검사 추가
+const MIN_CHECKS = BASE && TOKEN ? 46 : 35; // 2026-09-07: 실제 응답 기반 어댑터 검사 11개 추가
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {
