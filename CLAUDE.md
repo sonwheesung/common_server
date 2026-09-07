@@ -1,10 +1,13 @@
 # common_server
 
 여러 로컬 앱이 공유하는 백엔드. **현재 범위: 공지사항 + 문의하기.** 쿠폰·광고제거는 로드맵(`docs/PLAN.md` §8).
+**2026-09-07 추가: 정보 허브**(지원사업·커뮤니티 수집) — 앱 기능이 **아니다**. 운영자 전용이고 `docs/INFO_HUB.md`가 정본.
 
 - Next.js 16 App Router (Vercel) + Supabase Postgres + Drizzle
 - 설계 문서: `docs/PLAN.md` — **변경 전에 먼저 읽을 것**
 - 새 앱 붙이기: `docs/ONBOARDING.md` — 순서 · 단계별 확인 명령 · 증상→원인 표
+- **정보 허브: `docs/INFO_HUB.md`** — 지원사업·커뮤니티 수집. 🔴 **`appCode` 규약의 명시적 예외**(§1-1)이고,
+  `/api/v1/*`를 **안 만든다**(§1-2). 스레드 검증 규약(§10-B)은 *"확인 안 됨"과 "거짓"을 구분*하는 것이 전부다.
 - **다음 작업: `docs/NEXT.md`** — 미결 목록. 끝나면 지우거나 PLAN으로 옮긴다(남겨두면 썩는다).
 - **앱 세션에 알리기: `docs/MULTI_SESSION.md`** — 앱마다 세션이 따로 돌고 이 저장소가 허브다.
   `SDK_VERSION`을 올렸으면 **네 세션에 알리는 것까지가 일**이다 — 안 보내면 앱은 모른 채로 구버전을 안고 배포한다.
@@ -72,7 +75,7 @@
 | Vercel | `sonws/common-server` (CLI 배포 — GitHub 연동 없음) |
 | Supabase | `common-server` / ref `nhpnvwwhuyvwcmkkhayc` / ap-northeast-2 |
 | 풀러 | `aws-0-ap-northeast-2.pooler.supabase.com` — 런타임 `:6543`(transaction) · 마이그레이션 `:5432`(session) |
-| Vercel env | `DATABASE_URL` · `ADMIN_TOKEN` · `CRON_SECRET` · `DISCORD_TICKET_WEBHOOK_URL_MYWORD` (production만). **Upstash·Sentry·`RC_SECRET_API_KEY_*`는 미설정 = 의도적 no-op** |
+| Vercel env | `DATABASE_URL` · `ADMIN_TOKEN` · `CRON_SECRET` · `DISCORD_TICKET_WEBHOOK_URL_MYWORD` (production만). 정보 허브가 붙으면 `DATA_GO_KR_SERVICE_KEY` · `THREADS_ACCESS_TOKEN` · `DISCORD_INFO_WEBHOOK_URL` 추가(`docs/INFO_HUB.md` §8). **Upstash·Sentry·`RC_SECRET_API_KEY_*`는 미설정 = 의도적 no-op** |
 
 env를 바꾸면 **재배포해야 적용된다**(기존 배포는 빌드 시점 환경을 들고 있다). `node tools/_vercel_env.ts && npx vercel --prod --yes`.
 
@@ -143,6 +146,8 @@ app/api/admin/*                  관리자 — Bearer ADMIN_TOKEN
   └ subjects                     사용자 목록(문의 수·구독 상태). provider_id 원문은 안 내려준다
                                  stats의 `activity`가 DAU/WAU/MAU·일별 추이·요일 평균을 들고 온다
 app/api/cron/purge               보관기간 파기(일 1회)
+app/api/cron/info                정보 허브 수집(일 1회 · KST 06:00) — 계획, `docs/INFO_HUB.md`
+app/api/admin/info               정보 허브 목록·소스 — ⚠ **앱 스코프 없음**(유일한 예외)
 app/ops-4b7e21                   관리자 콘솔 (경로는 보안 장치가 아님 — 방어는 ADMIN_TOKEN)
 client/                          앱에 **복사해서** 쓰는 SDK (monorepo 안 씀)
 lib/                             admin·apps·auth·revenuecat·rcPull·entitlement·notify·ratelimit·retention·observability·afterSafe
