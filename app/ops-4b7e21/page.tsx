@@ -3427,9 +3427,16 @@ function InfoTab({
   const [expiredCount, setExpiredCount] = useState(0);
   const [categories, setCategories] = useState<{ category: string | null; n: number }[]>([]);
   const [category, setCategory] = useState<string>('');
+  // 🔴 기본 3일. 넓히는 건 클릭 한 번이지만, 700줄이 뜨면 아무도 안 읽는다.
+  const [days, setDays] = useState(3);
+  const [term, setTerm] = useState('');
+  const [draft, setDraft] = useState(''); // 입력 중인 검색어(타이핑마다 조회하지 않는다)
   const [showExpired, setShowExpired] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [capped, setCapped] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // 지원사업은 **마감**이 축이라 기간 창을 쓰지 않는다. 커뮤니티만 게시일로 자른다.
+  const isGrantKind = kind === 'grant';
 
   const load = useCallback(async () => {
     try {
@@ -3437,17 +3444,20 @@ function InfoTab({
       if (showExpired) qs.set('expired', 'show');
       if (unreadOnly) qs.set('unread', 'only');
       if (category) qs.set('category', category);
+      if (!isGrantKind) qs.set('days', String(days));
+      if (term) qs.set('q', term);
       const j = await api('info?' + qs.toString());
       setItems(j.items ?? []);
       setSources(j.sources ?? []);
       setCategories(j.categories ?? []);
       setExpiredCount(j.expiredCount ?? 0);
+      setCapped(!!j.capped);
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoaded(true);
     }
-  }, [api, kind, showExpired, unreadOnly, category, onError]);
+  }, [api, kind, showExpired, unreadOnly, category, days, term, isGrantKind, onError]);
 
   useEffect(() => {
     void load();
@@ -3474,7 +3484,7 @@ function InfoTab({
     }
   };
 
-  const isGrant = kind === 'grant';
+  const isGrant = isGrantKind;
 
   return (
     <div className="space-y-4">
@@ -3510,6 +3520,57 @@ function InfoTab({
         </div>
       )}
 
+      {!isGrant && (
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 기간 창 — 기본 3일. "전체"는 과거 아카이브까지 열어 보는 용도라 맨 끝에 둔다. */}
+          <div className="flex items-center gap-1">
+            {[
+              [1, '오늘'],
+              [3, '3일'],
+              [7, '1주'],
+              [30, '1달'],
+              [0, '전체'],
+            ].map(([d, label]) => (
+              <Button
+                key={String(d)}
+                variant={days === d ? 'primary' : 'default'}
+                className="h-8 px-2.5 text-[12.5px]"
+                onClick={() => setDays(d as number)}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+          <form
+            className="flex items-center gap-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setTerm(draft.trim());
+            }}
+          >
+            <input
+              value={draft}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraft(e.target.value)}
+              placeholder="제목·요약 검색 (예: Claude, 영상)"
+              className={`${field} h-8 w-56 text-[12.5px]`}
+            />
+            {term && (
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 px-2 text-[12px]"
+                onClick={() => {
+                  setDraft('');
+                  setTerm('');
+                }}
+              >
+                지우기
+              </Button>
+            )}
+          </form>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button variant={unreadOnly ? 'primary' : 'default'} onClick={() => setUnreadOnly((v) => !v)}>
           안 읽음만
@@ -3521,14 +3582,26 @@ function InfoTab({
         )}
         <span className="ml-auto text-[12.5px] text-fg-muted">
           {isGrant ? '마감 임박순' : '최신순'} · {items.length}건
+          {!isGrant && days > 0 && <span className="text-fg-muted/70"> · 최근 {days}일</span>}
+          {/* 🔴 잘렸으면 화면이 말한다. 안 말하면 "이게 전부"로 읽힌다. */}
+          {capped && <span className="text-warn"> · 상한에서 잘림 — 기간을 좁히거나 검색하세요</span>}
         </span>
       </div>
 
       {!loaded ? null : items.length === 0 ? (
         <EmptyState icon={isGrant ? Landmark : MessagesSquare}>
           {/* 🔴 빈 화면에서 "정상"과 "고장"을 가르는 문장. 위 수집 상태 줄과 짝이다. */}
-          표시할 항목이 없습니다. <b>위의 수집 상태를 먼저 보세요</b> — 마지막 성공이 오늘이면 진짜로 새 항목이 없는
-          것이고, 아니면 수집이 멈춘 것입니다.
+          {!isGrant && (days > 0 || term) ? (
+            <>
+              이 조건에 맞는 항목이 없습니다. <b>기간을 넓히거나</b> 검색어를 지워보세요 — 데이터는 지워지지 않았고,{' '}
+              <b>보는 창만 좁혀져 있습니다</b>.
+            </>
+          ) : (
+            <>
+              표시할 항목이 없습니다. <b>위의 수집 상태를 먼저 보세요</b> — 마지막 성공이 오늘이면 진짜로 새 항목이 없는
+              것이고, 아니면 수집이 멈춘 것입니다.
+            </>
+          )}
         </EmptyState>
       ) : (
         <div className="space-y-2">
