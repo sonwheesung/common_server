@@ -3308,6 +3308,7 @@ type InfoItemRow = {
   startsAt: string | null;
   endsAt: string | null;
   tags: string[];
+  category: string | null;
   readAt: string | null;
 };
 type InfoSourceRow = {
@@ -3319,6 +3320,15 @@ type InfoSourceRow = {
   lastOkAt: string | null;
   lastError: string | null;
   lastCount: number;
+};
+
+/** 카테고리 코드 → 화면 이름. **모르는 코드는 코드 그대로 보여준다** —
+ *  소스는 재배포 없이 늘어나므로(§3-3), 여기 없는 분류가 생기는 것이 정상이다.
+ *  빈 값으로 삼키면 새 분류가 화면에서 이름 없는 칩이 된다. */
+const INFO_CATEGORY_KO: Record<string, string> = {
+  ai: 'AI 소식',
+  devkr: '국내 개발',
+  idea: '앱·게임 아이디어',
 };
 
 /** 남은 일수. 마감이 없으면 null — **"마감 없음"이 아니라 "마감을 모름"**이다(상시·예산소진시). */
@@ -3415,6 +3425,8 @@ function InfoTab({
   const [items, setItems] = useState<InfoItemRow[]>([]);
   const [sources, setSources] = useState<InfoSourceRow[]>([]);
   const [expiredCount, setExpiredCount] = useState(0);
+  const [categories, setCategories] = useState<{ category: string | null; n: number }[]>([]);
+  const [category, setCategory] = useState<string>('');
   const [showExpired, setShowExpired] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -3424,16 +3436,18 @@ function InfoTab({
       const qs = new URLSearchParams({ kind });
       if (showExpired) qs.set('expired', 'show');
       if (unreadOnly) qs.set('unread', 'only');
+      if (category) qs.set('category', category);
       const j = await api('info?' + qs.toString());
       setItems(j.items ?? []);
       setSources(j.sources ?? []);
+      setCategories(j.categories ?? []);
       setExpiredCount(j.expiredCount ?? 0);
     } catch (e) {
       onError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoaded(true);
     }
-  }, [api, kind, showExpired, unreadOnly, onError]);
+  }, [api, kind, showExpired, unreadOnly, category, onError]);
 
   useEffect(() => {
     void load();
@@ -3472,6 +3486,29 @@ function InfoTab({
       </div>
 
       <CollectStatus sources={sources} onToggle={toggleSource} />
+
+      {/* 카테고리 칩 — 소스가 정한 분류다(화면에 하드코딩하지 않는다).
+          숫자는 "그 분류에 몇 건 있나"이지 "지금 몇 건 뜨나"가 아니다(서버 주석 참조). */}
+      {categories.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button variant={category === '' ? 'primary' : 'default'} className="h-8 px-2.5 text-[12.5px]" onClick={() => setCategory('')}>
+            전체
+          </Button>
+          {categories
+            .filter((c) => c.category)
+            .sort((a, b) => b.n - a.n)
+            .map((c) => (
+              <Button
+                key={c.category}
+                variant={category === c.category ? 'primary' : 'default'}
+                className="h-8 px-2.5 text-[12.5px]"
+                onClick={() => setCategory(c.category!)}
+              >
+                {INFO_CATEGORY_KO[c.category!] ?? c.category} {c.n}
+              </Button>
+            ))}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant={unreadOnly ? 'primary' : 'default'} onClick={() => setUnreadOnly((v) => !v)}>
@@ -3516,6 +3553,7 @@ function InfoTab({
                             : 'D-' + d}
                     </Badge>
                   )}
+                  {it.category && !isGrant && <Badge tone="accent">{INFO_CATEGORY_KO[it.category] ?? it.category}</Badge>}
                   {it.tags.slice(0, 2).map((t) => (
                     <Badge key={t} tone="muted">
                       {t}

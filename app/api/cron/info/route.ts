@@ -15,9 +15,13 @@ import {
   ADAPTERS,
   FETCH_TIMEOUT_MS,
   ITEMS_PER_FETCH,
-  SOURCES_PER_RUN,
+  MAX_SOURCES_PER_RUN,
+  RUN_BUDGET_MS,
+  SOURCE_BATCH,
+  USER_AGENT,
   buildRequestUrl,
   findList,
+  parseFeed,
   redact,
 } from '../../../../lib/info';
 import { reportError } from '../../../../lib/observability';
@@ -41,25 +45,42 @@ async function collect(src: SourceRow): Promise<number> {
 
   const res = await fetch(url, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    headers: { accept: 'application/json' },
+    headers: {
+      accept: 'application/json, application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8',
+      // 🔴 User-Agent 를 안 보내면 **Reddit 이 429로 막는다**(2026-09-07 실측 — UA를 넣으면 200).
+      //    누가 왜 부르는지 밝히는 게 예의이기도 하다. 연락처를 함께 둔다.
+      'user-agent': USER_AGENT,
+    },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
   const text = await res.text();
-  let payload: unknown;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    // XML로 오는 공공 API가 흔하다. 무엇이 왔는지 앞부분을 남긴다 — 다음 회차에 어댑터를 고칠 근거다.
-    throw new Error(`JSON이 아닙니다: ${text.slice(0, 120)}`);
-  }
 
-  const rows = findList(payload);
-  if (!rows) throw new Error(`응답에서 목록을 찾지 못했습니다: ${JSON.stringify(payload).slice(0, 160)}`);
+  // 응답이 JSON이면 목록을 찾아 들어가고, 아니면 RSS·Atom 피드로 읽는다.
+  // ⚠ 둘 다 실패하면 **던진다**. 빈 배열로 바꾸면 "0건 성공"이 되어 화면이 거짓말한다.
+  let rows: unknown[] | null = null;
+  if (/^\s*[[{]/.test(text)) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(`JSON처럼 시작했지만 파싱 실패: ${text.slice(0, 120)}`);
+    }
+    rows = findList(payload);
+    if (!rows) throw new Error(`응답에서 목록을 찾지 못했습니다: ${JSON.stringify(payload).slice(0, 160)}`);
+  } else {
+    rows = parseFeed(text);
+    if (!rows) throw new Error(`JSON도 피드도 아닙니다: ${text.slice(0, 140)}`);
+  }
 
   const adapter = ADAPTERS[src.kind];
   if (!adapter) throw new Error(`알 수 없는 kind: ${src.kind}`);
-  const items = adapter(rows.slice(0, ITEMS_PER_FETCH));
+  // 🔴 category 는 **소스가 정한다**(어댑터가 아니라). 어댑터는 응답만 알고 우리 분류는 모른다 —
+  //    그래야 같은 어댑터로 여러 분류를 수집할 수 있다.
+  const category = typeof (src.config as Record<string, unknown>).category === 'string'
+    ? ((src.config as Record<string, unknown>).category as string)
+    : null;
+  const items = adapter(rows.slice(0, ITEMS_PER_FETCH)).map((it) => ({ ...it, category }));
   if (!items.length) throw new Error(`${rows.length}행을 받았지만 제목·링크를 읽지 못했습니다 — 어댑터 필드명 확인 필요`);
 
   // 멱등: `(source_id, external_id)` 유니크. 이미 있으면 제목·마감만 갱신하고 `read_at`은 건드리지 않는다
@@ -74,6 +95,7 @@ async function collect(src: SourceRow): Promise<number> {
         summary: sql`excluded.summary`,
         endsAt: sql`excluded.ends_at`,
         startsAt: sql`excluded.starts_at`,
+        category: sql`excluded.category`,
         fetchedAt: new Date(),
       },
       setWhere: sql`${infoItems.title} is distinct from excluded.title or ${infoItems.endsAt} is distinct from excluded.ends_at`,
@@ -87,17 +109,29 @@ export async function GET(req: Request) {
   if (!authorized(req)) return NextResponse.json({ ok: false, reason: 'unauthorized' }, { status: 401 });
 
   try {
-    // 오래 안 돈 소스부터. 매일 돌면 소스가 늘어도 결국 전부 순회한다(늦어질 뿐 유실은 없다).
-    const due = await db
+    // 오래 안 돈 소스부터. 크론이 하루 1회뿐이라 **한 회차에 최대한 많이** 돌되,
+    // 서버리스 시간 제한에 걸리지 않게 **시간 예산**으로 끊는다.
+    // 🔴 고정 개수로 끊으면 소스가 늘 때마다 순회 주기가 조용히 길어진다 —
+    //    16개를 3개씩 돌면 한 바퀴에 엿새다. 그 사이 새 글은 안 보인다.
+    const started = Date.now();
+    const all = await db
       .select()
       .from(infoSources)
       .where(eq(infoSources.enabled, true))
       // ⚠ `asc()`로 감싸면 `... nulls first asc`가 되어 문법 오류다(admin/info와 같은 함정).
       .orderBy(sql`${infoSources.lastRunAt} asc nulls first`)
-      .limit(SOURCES_PER_RUN);
+      .limit(MAX_SOURCES_PER_RUN);
+
+    const due: typeof all = [];
+    const results: PromiseSettledResult<number>[] = [];
+    for (let i = 0; i < all.length; i += SOURCE_BATCH) {
+      if (Date.now() - started > RUN_BUDGET_MS) break; // 예산 초과 — 나머지는 내일 먼저 돈다
+      const batch = all.slice(i, i + SOURCE_BATCH);
+      due.push(...batch);
+      results.push(...(await Promise.allSettled(batch.map((s) => collect(s)))));
+    }
 
     const now = new Date();
-    const results = await Promise.allSettled(due.map((s) => collect(s)));
 
     const report: { id: string; ok: boolean; n?: number; error?: string }[] = [];
     for (let i = 0; i < due.length; i++) {
@@ -117,7 +151,7 @@ export async function GET(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, ran: due.length, sources: report });
+    return NextResponse.json({ ok: true, ran: due.length, of: all.length, ms: Date.now() - started, sources: report });
   } catch (e) {
     reportError(e, 'cron/info');
     return NextResponse.json({ ok: false, reason: 'error' }, { status: 500 });

@@ -347,6 +347,15 @@ export const infoItems = pgTable(
     summary: text('summary'),
     /** 커뮤니티용. 지원사업은 null. */
     author: text('author'),
+    /**
+     * 화면에서 나눠 보는 축. `kind`가 **탭**을 가르고 `category`가 **탭 안의 묶음**을 가른다.
+     * 예: kind='community' 안에서 'ai' | 'devkr' | 'idea'.
+     *
+     * ⚠ `tags`로 대신하지 않는 이유: tags는 출처가 주는 값이라 소스마다 어휘가 다르다.
+     * category는 **우리가 정하는 값**이고 `info_sources.config.category`에서 그대로 복사된다 —
+     * 어휘를 통제해야 필터가 화면에서 안 깨진다.
+     */
+    category: text('category'),
     publishedAt: timestamp('published_at', { withTimezone: true }),
     /** 지원사업 접수 시작. */
     startsAt: timestamp('starts_at', { withTimezone: true }),
@@ -365,6 +374,7 @@ export const infoItems = pgTable(
     uniqueIndex('info_items_source_external_uq').on(t.sourceId, t.externalId),
     index('info_items_kind_ends_idx').on(t.kind, t.endsAt), // 마감 임박순 정렬
     index('info_items_kind_published_idx').on(t.kind, t.publishedAt), // 커뮤니티 최신순
+    index('info_items_kind_category_idx').on(t.kind, t.category), // 카테고리 필터
   ],
 );
 

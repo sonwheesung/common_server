@@ -30,7 +30,7 @@ for (let i = 2; i < process.argv.length; i++) {
   }
 }
 
-const SOURCES = [
+const SOURCES: { id: string; kind: string; label: string; config: Record<string, unknown> }[] = [
   {
     id: 'bizinfo',
     kind: 'grant',
@@ -63,18 +63,63 @@ const SOURCES = [
   },
 ];
 
+/**
+ * 커뮤니티 — RSS·Atom 피드. **2026-09-07에 전부 직접 호출해 살아 있는 것만 남겼다**(응답 200 + item 존재).
+ *
+ * 🔴 Anthropic 은 공개 RSS 가 없다(`/rss.xml` · `/news/rss.xml` · `/feed.xml` · `/blog/rss.xml` 전부 404).
+ *    Claude 관련 소식은 Hacker News · TechCrunch · The Verge 쪽에서 잡힌다 — 그걸로 대신한다.
+ * ⚠ Reddit 은 짧은 간격으로 부르면 **429**를 준다. 하루 1회라 문제없지만, 수동으로 연달아 돌리지 말 것.
+ * ⚠ VentureBeat · Stability AI · Indie Hackers · Disquiet · OKKY 는 그날 못 읽어 뺐다(404 · 429 · item 0).
+ */
+const FEEDS: { id: string; label: string; category: string; url: string }[] = [
+  // ── AI 업계 소식 ──
+  { id: 'rss:openai', label: 'AI · OpenAI News', category: 'ai', url: 'https://openai.com/blog/rss.xml' },
+  { id: 'rss:deepmind', label: 'AI · Google DeepMind', category: 'ai', url: 'https://deepmind.google/blog/rss.xml' },
+  { id: 'rss:huggingface', label: 'AI · Hugging Face', category: 'ai', url: 'https://huggingface.co/blog/feed.xml' },
+  // 이미지·동영상 생성 모델 소식이 여기 제일 빨리 뜬다
+  { id: 'rss:replicate', label: 'AI · Replicate', category: 'ai', url: 'https://replicate.com/blog/rss' },
+  { id: 'rss:tc-ai', label: 'AI · TechCrunch', category: 'ai', url: 'https://techcrunch.com/category/artificial-intelligence/feed/' },
+  { id: 'rss:verge-ai', label: 'AI · The Verge', category: 'ai', url: 'https://www.theverge.com/rss/ai-artificial-intelligence/index.xml' },
+
+  // ── 국내 개발 ──
+  { id: 'rss:geeknews', label: '국내 · GeekNews', category: 'devkr', url: 'https://news.hada.io/rss/news' },
+  { id: 'rss:44bits', label: '국내 · 44BITS', category: 'devkr', url: 'https://www.44bits.io/ko/feed/all' },
+  { id: 'rss:yozmit', label: '국내 · 요즘IT', category: 'devkr', url: 'https://yozm.wishket.com/magazine/feed/' },
+  { id: 'rss:kakaotech', label: '국내 · 카카오테크', category: 'devkr', url: 'https://tech.kakao.com/feed/' },
+  { id: 'rss:tosstech', label: '국내 · 토스테크', category: 'devkr', url: 'https://toss.tech/rss.xml' },
+  { id: 'rss:daangn', label: '국내 · 당근테크', category: 'devkr', url: 'https://medium.com/feed/daangn' },
+
+  // ── 앱·게임 아이디어 ──
+  { id: 'rss:hn-show', label: '아이디어 · Show HN', category: 'idea', url: 'https://hnrss.org/show' },
+  { id: 'rss:hn-front', label: '아이디어 · Hacker News', category: 'idea', url: 'https://hnrss.org/frontpage' },
+  { id: 'rss:producthunt', label: '아이디어 · Product Hunt', category: 'idea', url: 'https://www.producthunt.com/feed' },
+  { id: 'rss:r-sideproject', label: '아이디어 · r/SideProject', category: 'idea', url: 'https://www.reddit.com/r/SideProject/.rss' },
+  { id: 'rss:r-gameideas', label: '아이디어 · r/gameideas', category: 'idea', url: 'https://www.reddit.com/r/gameideas/.rss' },
+];
+
+for (const f of FEEDS) {
+  SOURCES.push({
+    id: f.id,
+    kind: 'community',
+    label: f.label,
+    // 🟢 피드는 인증키가 없다 — `keyEnv`를 비워두면 `buildRequestUrl`이 키 없이 URL을 만든다.
+    config: { endpoint: f.url, category: f.category, params: {} },
+  });
+}
+
 const client = postgres(process.env.DATABASE_URL, { max: 1, prepare: false });
 const db = drizzle(client);
 
 for (const s of SOURCES) {
   await db
     .insert(infoSources)
-    .values({ id: s.id, kind: s.kind, label: s.label, config: s.config, enabled: false })
+    // 🔴 지원사업(grant)은 서비스키가 필요하므로 꺼서 만든다. 커뮤니티(RSS)는 키가 없어 바로 돈다.
+    .values({ id: s.id, kind: s.kind, label: s.label, config: s.config, enabled: s.kind === 'community' })
     // 🔴 기존 행의 enabled·lastOkAt·lastError를 덮지 않는다 — 운영자가 정한 상태이지
     //    이 스크립트가 정할 값이 아니다(문의 상태 규약과 같은 계열). endpoint만 갱신한다.
     .onConflictDoUpdate({
       target: infoSources.id,
-      set: { label: s.label, ...(s.config.endpoint ? { config: s.config } : {}) },
+      set: { label: s.label, ...((s.config as Record<string, unknown>).endpoint ? { config: s.config } : {}) },
     });
 }
 
@@ -82,8 +127,9 @@ const rows = await db.select().from(infoSources);
 console.log('등록된 수집원:');
 for (const r of rows) {
   const ep = (r.config as Record<string, unknown>)?.endpoint;
+  const cat = (r.config as Record<string, unknown>)?.category ?? '-';
   console.log(
-    `  ${r.id.padEnd(12)} ${r.kind.padEnd(10)} enabled=${String(r.enabled).padEnd(5)} endpoint=${ep ? '설정됨' : '⚠ 비어 있음'}`,
+    `  ${r.id.padEnd(18)} ${r.kind.padEnd(10)} ${String(cat).padEnd(7)} enabled=${String(r.enabled).padEnd(5)} ${ep ? '✅' : '⚠ endpoint 없음'}`,
   );
 }
 console.log('\n다음 순서:');

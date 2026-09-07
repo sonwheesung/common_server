@@ -9,11 +9,22 @@
 /** 저장하는 요약의 최대 길이. 본문은 저장하지 않는다 — Supabase 무료 500MB(§5-3). */
 export const SUMMARY_MAX = 500;
 
-/** 한 회차에 처리하는 소스 수. 서버리스 한 요청이 오래 못 도므로 나눠 돈다(§5-2). */
-export const SOURCES_PER_RUN = 3;
+/** 한 회차에 **동시에** 부르는 소스 수. 외부 서버에 한꺼번에 몰리지 않게 나눈다. */
+export const SOURCE_BATCH = 4;
+
+/** 한 회차의 시간 예산(ms). 이걸 넘기면 남은 소스는 다음 회차로 미룬다 —
+ *  `lastRunAt` 오름차순이라 **미뤄진 것이 다음에 제일 먼저** 돈다(굶지 않는다). */
+export const RUN_BUDGET_MS = 25_000;
+
+/** 한 회차에 볼 소스 수의 상한. 예산이 남아도 여기서 멈춘다(폭주 방지). */
+export const MAX_SOURCES_PER_RUN = 24;
 
 /** 한 소스에서 한 번에 가져오는 최대 항목 수. */
 export const ITEMS_PER_FETCH = 100;
+
+/** 수집기가 밝히는 신원. 🔴 이게 없으면 Reddit 이 **429**로 막는다(2026-09-07 실측).
+ *  공개 피드를 가져가는 쪽이 누구인지 밝히는 게 맞고, 막혔을 때 상대가 연락할 곳도 남긴다. */
+export const USER_AGENT = 'common-server-info-hub/1.0 (+https://common-server.vercel.app)';
 
 /** 외부 호출 타임아웃(ms). 하나가 늦어도 회차 전체를 잡아먹지 않게. */
 export const FETCH_TIMEOUT_MS = 12_000;
@@ -29,6 +40,8 @@ export type NormalizedItem = {
   startsAt: Date | null;
   endsAt: Date | null;
   tags: string[];
+  /** 화면 필터 축. 소스 설정(`config.category`)에서 크론이 찍는다 — 어댑터는 모른다. */
+  category?: string | null;
 };
 
 // ───────────────────────── 순수 변환 ─────────────────────────
@@ -125,6 +138,55 @@ export function unescapeEntities(s: string | null): string | null {
     .replace(/&amp;/g, '&'); // 🔴 &amp; 는 **마지막**에 — 먼저 풀면 &amp;lt; 가 < 로 이중 복원된다
 }
 
+/** 태그를 걷어내고 사람이 읽는 텍스트만 남긴다. RSS `description`은 HTML 덩어리로 오는 게 보통이다. */
+export function stripTags(html: string | null): string | null {
+  if (!html) return null;
+  // 🔴 **순서가 중요하다: 엔티티를 먼저 풀고 태그를 걷어낸다.**
+  //    RSS `description`은 대개 `&lt;p&gt;…` 처럼 **이스케이프된 HTML**로 온다 —
+  //    태그를 먼저 지우면 지울 태그가 없고, 그 뒤에 엔티티를 풀면 `<p>`가 화면에 그대로 뜬다.
+  //    (2026-09-07 가드가 이 순서 오류를 잡았다.)
+  const unescaped = unescapeEntities(html) ?? '';
+  return unescaped.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || null;
+}
+
+/**
+ * RSS 2.0 · Atom 피드를 행 목록으로. **의존성을 안 쓴다** — 필요한 건 필드 6개뿐이고,
+ * XML 파서를 하나 들이면 그것도 유지 대상이 된다.
+ *
+ * 🔴 못 읽으면 **null**을 준다(빈 배열이 아니다). `findList`와 같은 규율이다 —
+ *    "0건 성공"으로 기록되면 화면이 *"새 글 없음"* 으로 거짓말한다.
+ *
+ * ⚠ 이건 **피드용**이다. 공공 API가 주는 XML(기업마당 등)은 스키마가 전혀 달라 여기서 안 읽힌다.
+ */
+export function parseFeed(xml: string): Record<string, string | null>[] | null {
+  if (!/<(rss|feed|rdf:RDF)[\s>]/i.test(xml)) return null;
+  // \1 역참조로 여는 태그와 닫는 태그를 맞춘다 — <item>…</item> 과 <entry>…</entry> 를 한 정규식으로.
+  const blocks = xml.match(/<(item|entry)[\s>][\s\S]*?<\/\1>/gi);
+  if (!blocks || !blocks.length) return null;
+
+  const tag = (b: string, name: string): string | null => {
+    // ⚠ 템플릿 문자열 안이므로 정규식 escape 를 한 번 더 준다(`\s` → 실제 `\s`).
+    const m = b.match(new RegExp(String.raw`<${name}(?:\s[^>]*)?>([\s\S]*?)</${name}>`, 'i'));
+    if (!m) return null;
+    const cdata = m[1].match(/<!\[CDATA\[([\s\S]*?)\]\]>/);
+    return (cdata ? cdata[1] : m[1]).trim() || null;
+  };
+
+  return blocks.map((b) => {
+    // Atom 의 링크는 본문이 아니라 href 속성에 있다. RSS 는 본문이다 — 둘 다 본다.
+    const href = b.match(/<link[^>]*\shref=["']([^"']+)["']/i)?.[1] ?? null;
+    return {
+      title: unescapeEntities(tag(b, 'title')),
+      link: href ?? tag(b, 'link'),
+      // description(RSS) · summary/content(Atom). 길면 뒤에서 잘린다.
+      description: stripTags(tag(b, 'description') ?? tag(b, 'summary') ?? tag(b, 'content')),
+      pubDate: tag(b, 'pubDate') ?? tag(b, 'published') ?? tag(b, 'updated') ?? tag(b, 'dc:date'),
+      guid: tag(b, 'guid') ?? tag(b, 'id'),
+      author: unescapeEntities(tag(b, 'author') ?? tag(b, 'dc:creator') ?? tag(b, 'name')),
+    };
+  });
+}
+
 /** 여러 후보 키 중 처음 값이 있는 것. 공공 API는 같은 뜻에 다른 이름을 쓴다. */
 const pick = (row: Record<string, unknown>, keys: string[]): string | null => {
   for (const k of keys) {
@@ -188,21 +250,23 @@ export const grantAdapter: Adapter = (rows) =>
     ];
   });
 
-/** 커뮤니티(스레드 키워드 검색 · RSS). 작성자와 게시 시각이 축이고 마감이 없다. */
+/** 커뮤니티(RSS·Atom 피드 · 나중에 스레드 키워드 검색). 작성자와 게시 시각이 축이고 마감이 없다. */
 export const communityAdapter: Adapter = (rows) =>
   rows.flatMap((raw) => {
     const row = raw as Record<string, unknown>;
-    const title = pick(row, ['text', 'title', 'content', 'description']);
-    const link = pick(row, ['permalink', 'link', 'url']);
+    const title = pick(row, ['title', 'text', 'content']);
+    const link = pick(row, ['link', 'permalink', 'url']);
     if (!title || !link) return [];
     return [
       {
-        externalId: pick(row, ['id', 'guid']) ?? normalizeUrl(link),
+        // 🔴 guid 가 있으면 그걸 쓴다. 없으면 정규화한 URL —
+        //    원문 URL을 그대로 키로 쓰면 추적 파라미터가 붙는 순간 같은 글이 두 줄이 된다.
+        externalId: pick(row, ['guid', 'id']) ?? normalizeUrl(link),
         title: clipSummary(title) ?? title,
         url: normalizeUrl(link),
-        summary: null, // 커뮤니티는 제목이 곧 본문이라 따로 두지 않는다
-        author: pick(row, ['username', 'author', 'creator']),
-        publishedAt: parseDate(pick(row, ['timestamp', 'pubDate', 'published'])),
+        summary: clipSummary(pick(row, ['description', 'summary'])),
+        author: pick(row, ['author', 'creator', 'username']),
+        publishedAt: parseDate(pick(row, ['pubDate', 'timestamp', 'published'])),
         startsAt: null,
         endsAt: null,
         tags: [],

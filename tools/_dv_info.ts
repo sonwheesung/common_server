@@ -18,6 +18,9 @@ import {
   daysLeft,
   findList,
   grantAdapter,
+  communityAdapter,
+  parseFeed,
+  stripTags,
   normalizeUrl,
   parseDate,
   parsePeriod,
@@ -139,6 +142,45 @@ console.log(`[_dv_info] ${BASE || '(순수 계산만)'}\n`);
   check('엔티티 복원은 &amp; 를 마지막에 푼다', unescapeEntities('&amp;lt;') === '&lt;', String(unescapeEntities('&amp;lt;')));
 }
 
+// ── ④-c 🔴 RSS·Atom 파서 — 커뮤니티의 유일한 입구다 ────────────────────────
+{
+  const rss = `<?xml version="1.0"?><rss version="2.0"><channel><title>피드 제목</title>
+    <item><title><![CDATA[첫 글 &amp; 제목]]></title><link>https://x.kr/a?utm_source=rss</link>
+      <description>&lt;p&gt;본문 &lt;b&gt;굵게&lt;/b&gt;&lt;/p&gt;</description>
+      <pubDate>Sun, 07 Sep 2026 01:02:03 GMT</pubDate><guid>tag:x.kr,2026:1</guid>
+      <dc:creator>홍길동</dc:creator></item>
+    <item><title>둘째 글</title><link>https://x.kr/b</link></item></channel></rss>`;
+  const rows = parseFeed(rss);
+  check('RSS에서 2건을 읽는다', (rows ?? []).length === 2, `n=${(rows ?? []).length}`);
+  check('CDATA 안의 제목을 읽는다', rows?.[0]?.title === '첫 글 & 제목', String(rows?.[0]?.title));
+  check('description의 HTML 태그를 걷어낸다', rows?.[0]?.description === '본문 굵게', String(rows?.[0]?.description));
+  check('guid를 읽는다', rows?.[0]?.guid === 'tag:x.kr,2026:1', String(rows?.[0]?.guid));
+  check('dc:creator를 작성자로 읽는다', rows?.[0]?.author === '홍길동', String(rows?.[0]?.author));
+
+  const atom = `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Atom</title>
+    <entry><title>아톰 글</title><link rel="alternate" href="https://y.kr/1"/>
+      <summary>요약문</summary><updated>2026-09-06T00:00:00Z</updated><id>urn:1</id></entry></feed>`;
+  const arows = parseFeed(atom);
+  check('Atom에서 1건을 읽는다', (arows ?? []).length === 1);
+  // 🔴 Atom의 링크는 본문이 아니라 href 속성에 있다. 이걸 놓치면 링크가 통째로 빈다.
+  check('Atom 링크를 href 속성에서 읽는다', arows?.[0]?.link === 'https://y.kr/1', String(arows?.[0]?.link));
+
+  // 🔴 못 읽으면 null (빈 배열이 아니다) — 빈 배열이면 크론이 "0건 성공"으로 기록하고 화면이 거짓말한다
+  check('피드가 아니면 null이다', parseFeed('<html><body>안녕</body></html>') === null);
+  check('항목 없는 피드도 null이다', parseFeed('<rss version="2.0"><channel><title>빈</title></channel></rss>') === null);
+  check('빈 문자열도 null이다', parseFeed('') === null);
+  check('stripTags는 빈 결과를 null로 준다', stripTags('<p> </p>') === null);
+
+  const ci = communityAdapter(rows!);
+  check('커뮤니티 어댑터가 2건으로 변환한다', ci.length === 2, `n=${ci.length}`);
+  check('guid가 고유 키가 된다', ci[0]?.externalId === 'tag:x.kr,2026:1', String(ci[0]?.externalId));
+  // guid가 없는 둘째 항목은 정규화한 URL로 떨어져야 한다
+  check('guid 없으면 정규화한 URL이 키다', ci[1]?.externalId === normalizeUrl('https://x.kr/b'), String(ci[1]?.externalId));
+  check('링크의 추적 파라미터가 제거된다', !ci[0]!.url.includes('utm_source'), ci[0]?.url);
+  check('게시 시각을 읽는다', !!ci[0]?.publishedAt);
+  check('커뮤니티 항목엔 마감이 없다', ci[0]?.endsAt === null);
+}
+
 // ── ⑤ 시크릿 가리기 — last_error는 화면·로그에 그대로 나간다 ────────────────
 {
   const msg = redact('fetch https://api.kr/x?serviceKey=SUPERSECRET123&page=1 실패');
@@ -232,7 +274,7 @@ const KNOWN_SKIPS = ['route-cross-check', 'route-fail-closed'];
 
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다(CLAUDE.md).
 //   BASE_URL 없이 돌리면 순수 계산만 도므로 바닥이 그 개수다.
-const MIN_CHECKS = BASE && TOKEN ? 46 : 35; // 2026-09-07: 실제 응답 기반 어댑터 검사 11개 추가
+const MIN_CHECKS = BASE && TOKEN ? 63 : 52; // 2026-09-07: RSS/Atom 파서 검사 17개 추가
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {

@@ -35,8 +35,12 @@ export async function GET(req: Request) {
     // "마감 없음"이 아니라 "마감을 모름"이라 지난 것으로 칠 수 없다(lib/info.ts parsePeriod 주석).
     if (!showExpired) conds.push(sql`(${infoItems.endsAt} is null or ${infoItems.endsAt} >= now())`);
     if (unreadOnly) conds.push(isNull(infoItems.readAt));
+    // 카테고리 필터. 값을 화이트리스트로 막지 않는다 — 분류는 `info_sources.config`에서 오고,
+    // 소스를 늘리는 데 재배포가 필요 없어야 한다(§3-3). 없는 값이면 그냥 0건이 나온다.
+    const category = q.get('category');
+    if (category) conds.push(eq(infoItems.category, category));
 
-    const [items, sources, expiredCount] = await Promise.all([
+    const [items, sources, categories, expiredCount] = await Promise.all([
       db
         .select()
         .from(infoItems)
@@ -51,6 +55,14 @@ export async function GET(req: Request) {
         )
         .limit(LIST_LIMIT),
       db.select().from(infoSources).where(eq(infoSources.kind, kind)).orderBy(asc(infoSources.id)),
+      // 카테고리별 건수 — 화면의 필터 칩에 숫자를 같이 띄운다.
+      // 🔴 목록과 **같은 마감/읽음 조건**을 쓰지 않는다는 점을 분명히 해둔다: 이건 "그 분류에 몇 건이 있나"이지
+      //    "지금 화면에 몇 건 뜨나"가 아니다. 두 수를 같은 뜻으로 읽으면 안 된다.
+      db
+        .select({ category: infoItems.category, n: sql<number>`count(*)::int` })
+        .from(infoItems)
+        .where(and(eq(infoItems.kind, kind), sql`(${infoItems.endsAt} is null or ${infoItems.endsAt} >= now())`))
+        .groupBy(infoItems.category),
       db
         .select({ n: sql<number>`count(*)::int` })
         .from(infoItems)
@@ -66,6 +78,7 @@ export async function GET(req: Request) {
       // 수집 상태 — **이게 화면의 절반이다**(§6-2). 빈 목록이 "새 공고 없음"인지 "수집이 죽었음"인지
       // 여기서만 갈린다. lastRunAt/lastOkAt을 둘 다 내려보내는 이유가 그것이다.
       sources,
+      categories,
       expiredCount: expiredCount[0]?.n ?? 0,
     });
   } catch (e) {

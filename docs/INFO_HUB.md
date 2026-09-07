@@ -433,7 +433,8 @@ FAIL 이 안 나면 그 검사는 아무것도 안 보는 것이다.
 | 파기 | ✅ 기존 `cron/purge`에 얹음(마감 후 30일 / 수집 후 90일) |
 | `tools/_dv_info.ts` | ✅ 39개 통과(경로 간 대조 포함) · 변이 테스트로 FAIL 확인 |
 | 🟢 **kstartup** | ✅ **가동 중** — 승인(~2028-09-07) · 엔드포인트 `apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementInformation01` · 모집중 필터 `cond[rcrt_prgs_yn::EQ]=Y` · **93건 수집** |
-| ⏸ **bizinfo** | 미신청 — 데이터셋 페이지(`15113297`)가 응답 없음. **XML 전용**이라 파서도 필요하다 |
+| 🟢 **커뮤니티 RSS 17개** | ✅ **가동 중** — AI 6 · 국내 개발 6 · 아이디어 5. **721건 수집**(ai 429 · devkr 151 · idea 141) |
+| ⏸ **bizinfo** | 미신청 — 데이터셋 페이지(`15113297`)가 응답 없음. ⚠ 그쪽은 **API XML**이라 RSS 파서로 못 읽는다(스키마가 다르다) |
 
 ### ✅ 실측 기록 (2026-09-07 · 이 절이 다음 소스를 붙일 때의 참고다)
 
@@ -473,6 +474,44 @@ FAIL 이 안 나면 그 검사는 아무것도 안 보는 것이다.
 ⚠ **어댑터의 필드명은 실제 응답으로 검증되지 않았다**(키가 없어서). 첫 실행이 실패하면
 `last_error`가 실제 응답 앞부분을 보여준다 — 그걸 보고 `lib/info.ts`의 후보 목록을 좁힌다.
 🔴 그 실패는 **조용하지 않다.** 화면에 사유가 그대로 뜬다.
+
+---
+
+## 11-B. 커뮤니티(RSS) — 실측 기록 (2026-09-07)
+
+**카테고리 셋**으로 나눈다. 분류는 `info_sources.config.category`에 있고 크론이 항목에 찍는다 —
+**화면이 정하지 않는다**(소스가 재배포 없이 늘어야 하므로).
+
+| 카테고리 | 소스 | 비고 |
+|---|---|---|
+| `ai` AI 소식 | OpenAI · Google DeepMind · Hugging Face · **Replicate** · TechCrunch AI · The Verge AI | 이미지·동영상 생성 모델은 HF·Replicate 가 제일 빠르다 |
+| `devkr` 국내 개발 | GeekNews · 44BITS · 요즘IT · 카카오테크 · 토스테크 · 당근테크 | |
+| `idea` 앱·게임 아이디어 | Show HN · Hacker News · Product Hunt · r/SideProject · r/gameideas | |
+
+🔴 **Anthropic 은 공개 RSS 가 없다** — `/rss.xml` · `/news/rss.xml` · `/feed.xml` · `/blog/rss.xml` **전부 404**.
+Claude 소식은 Hacker News · TechCrunch · The Verge 로 들어온다. 나중에 피드가 생기면 그때 소스만 추가하면 된다.
+
+⚠ **뺀 것들**(2026-09-07에 못 읽음): VentureBeat AI(429) · Stability AI(item 0) · Indie Hackers(item 0) ·
+Disquiet(404) · OKKY(404) · GeekNews Topics(404).
+
+### 🔴 이번에 가드가 잡은 버그 셋 — 전부 조용히 틀렸을 것들
+
+| 버그 | 안 잡았으면 |
+|---|---|
+| `stripTags` 가 **태그를 먼저 지우고 엔티티를 나중에** 풀었다 | RSS 본문은 `&lt;p&gt;…` 로 오므로 지울 태그가 없고, 그 뒤 엔티티를 풀어 **화면에 `<p>`가 그대로** 뜬다 |
+| 블록 정규식의 `` 역참조가 빠졌다 | `<item>` 과 `</entry>` 가 섞여 매칭돼 **항목이 통째로 안 잡힌다** |
+| 템플릿 문자열 안 `\s` 가 한 겹만 들어갔다 | 정규식이 `s` 문자를 찾게 되어 **모든 필드가 null** — 제목도 링크도 없어 0건 |
+
+→ 마지막 것은 `String.raw` 로 고쳤다. **템플릿 문자열로 정규식을 만들 땐 `String.raw` 를 쓴다.**
+
+⚠ **Reddit 은 User-Agent 가 없으면 429로 막는다**(실측). `USER_AGENT` 상수로 신원을 밝힌다 —
+막혔을 때 상대가 연락할 곳도 남긴다. 짧은 간격으로 연달아 부르면 UA 가 있어도 429가 난다(하루 1회라 무관).
+
+### 시간 예산으로 순회한다 (고정 개수 아님)
+
+소스가 18개가 되면서 **고정 N개**로는 한 바퀴에 엿새가 걸린다 — 그 사이 새 글이 안 보인다.
+→ `RUN_BUDGET_MS`(25초) 안에서 `SOURCE_BATCH`(4개)씩 돈다. 실측 **18/18을 6~17초**에 끝낸다.
+🟢 예산을 넘겨 밀린 소스는 `lastRunAt` 오름차순이라 **다음 회차에 제일 먼저** 돈다(굶지 않는다).
 
 ---
 
