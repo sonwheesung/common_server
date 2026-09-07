@@ -6,6 +6,9 @@
 - Next.js 16 App Router (Vercel) + Supabase Postgres + Drizzle
 - 설계 문서: `docs/PLAN.md` — **변경 전에 먼저 읽을 것**
 - 새 앱 붙이기: `docs/ONBOARDING.md` — 순서 · 단계별 확인 명령 · 증상→원인 표
+- **정보 훑기 스킬: `.claude/skills/info-scan/`** — 바깥 정보를 **저장하지 않고** 그 자리에서 가져와 골라 준다.
+  🔴 저장 방식(RSS 17개)을 켰다가 **721건 쌓이고 0건 읽혀 껐다**(`INFO_HUB.md` §11-C) — 그 대체다.
+  성패는 "많이 가져오기"가 아니라 **"적게 남기기"**에 있다. 원자료 60건을 그대로 옮기면 그 실패의 반복이다.
 - **정보 허브: `docs/INFO_HUB.md`** — 지원사업·커뮤니티 수집. 🔴 **`appCode` 규약의 명시적 예외**(§1-1)이고,
   `/api/v1/*`를 **안 만든다**(§1-2). 스레드 검증 규약(§10-B)은 *"확인 안 됨"과 "거짓"을 구분*하는 것이 전부다.
 - **다음 작업: `docs/NEXT.md`** — 미결 목록. 끝나면 지우거나 PLAN으로 옮긴다(남겨두면 썩는다).
@@ -103,6 +106,7 @@ node tools/_dv_activity.ts                                   # 활성 집계 순
 node tools/_dv_contrast.ts                                   # 색 대비 — globals.css를 읽어 계산(DB 불필요)
 node tools/_dv_info.ts                                       # 정보 허브 순수계산. BASE_URL+ADMIN_TOKEN 주면 라우트·경로간 대조까지
 node --env-file=.env.local tools/seed_info.ts                # 정보 허브 수집원 등록(멱등 · enabled=false로 만든다)
+node --env-file=.env.local .claude/skills/info-scan/fetch.mjs --category ai --days 5   # 저장 없이 그 자리에서 훑기
 
 BASE_URL=... node tools/_e2e_heartbeat.ts                    # ⚠ 하트비트 성공 경로 — 행을 만들고 끝에 지운다
 ```
