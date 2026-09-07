@@ -50,6 +50,10 @@ import {
   Wrench,
   X,
   ChevronDown,
+  Landmark,
+  MessagesSquare,
+  ExternalLink,
+  CircleDot,
 } from 'lucide-react';
 
 type App = { appCode: string; name: string; active: boolean; ticketDailyCap: number; sortOrder: number };
@@ -165,7 +169,7 @@ type Stats = {
   };
 };
 
-type Tab = 'overview' | 'anns' | 'tickets' | 'subjects' | 'billing' | 'errors' | 'settings' | 'apps';
+type Tab = 'overview' | 'anns' | 'tickets' | 'subjects' | 'billing' | 'errors' | 'settings' | 'apps' | 'grants' | 'community';
 
 // ── 브랜드(★ 다른 앱 이식 지점) ─────────────────────────────────────────────
 // 앱 고유 문자열은 여기 한 객체에만 둔다. 종전엔 로그인 화면·사이드바·헤더 3곳에 흩어져 있어
@@ -261,6 +265,10 @@ const NAV: { id: Tab; icon: React.ElementType; label: string; grp?: string }[] =
   { id: 'errors', icon: OctagonAlert, label: '오류', grp: '운영' },
   { id: 'settings', icon: Wrench, label: '앱 설정', grp: '설정' },
   { id: 'apps', icon: Boxes, label: '앱 관리', grp: '설정' },
+  // 🔴 '정보' 그룹은 **앱과 무관하다**(docs/INFO_HUB.md §1-1). 위 그룹들과 달리 앱 선택이 결과를 안 바꾼다 —
+  //    그 사실을 화면이 직접 말한다(InfoTab 상단 배너). 안 적으면 "이 앱 관련 공고"로 읽힌다.
+  { id: 'grants', icon: Landmark, label: '지원사업', grp: '정보' },
+  { id: 'community', icon: MessagesSquare, label: '커뮤니티', grp: '정보' },
 ];
 const TITLES: Record<Tab, string> = {
   overview: '대시보드',
@@ -271,6 +279,8 @@ const TITLES: Record<Tab, string> = {
   errors: '오류 · 웹훅 감사',
   settings: '앱 설정',
   apps: '앱 관리',
+  grants: '지원사업',
+  community: '커뮤니티',
 };
 
 // 서버가 주는 reason 코드를 그대로 노출하면 운영자에게 `bad-request`·`Failed to fetch`가 뜬다.
@@ -1134,6 +1144,8 @@ export default function Ops() {
             <Errors stats={stats} />
           ) : tab === 'settings' ? (
             <SettingsTab api={api} appCode={appCode} s={settings} reload={loadApp} onError={setErr} flash={flash} />
+          ) : tab === 'grants' || tab === 'community' ? (
+            <InfoTab api={api} kind={tab === 'grants' ? 'grant' : 'community'} onError={setErr} flash={flash} />
           ) : (
             <AppsTab api={api} apps={apps} reload={loadApps} onError={setErr} flash={flash} />
           )}
@@ -3278,6 +3290,274 @@ function AppsTab({ api, apps, reload, onError, flash }: Common & { apps: App[] }
           </Button>
         </article>
       ))}
+    </div>
+  );
+}
+
+// ───────────────────────── 정보 허브 (docs/INFO_HUB.md) ─────────────────────────
+
+type InfoItemRow = {
+  id: string;
+  sourceId: string;
+  kind: string;
+  title: string;
+  url: string;
+  summary: string | null;
+  author: string | null;
+  publishedAt: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  tags: string[];
+  readAt: string | null;
+};
+type InfoSourceRow = {
+  id: string;
+  kind: string;
+  label: string;
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastOkAt: string | null;
+  lastError: string | null;
+  lastCount: number;
+};
+
+/** 남은 일수. 마감이 없으면 null — **"마감 없음"이 아니라 "마감을 모름"**이다(상시·예산소진시). */
+const dday = (endsAt: string | null): number | null =>
+  endsAt ? Math.ceil((new Date(endsAt).getTime() - Date.now()) / 86_400_000) : null;
+
+const ymd = (iso: string | null): string => (iso ? new Date(iso).toISOString().slice(0, 10) : '—');
+
+/** 마지막 성공으로부터 며칠 지났나. 수집이 멈춘 지 얼마인지가 이 한 줄로 읽혀야 한다. */
+const daysSince = (iso: string | null): number | null =>
+  iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000) : null;
+
+/**
+ * 🔴 **수집 상태 줄 — 이 화면의 절반이다**(INFO_HUB §6-2).
+ *
+ * 빈 목록이 "새 공고가 없다"인지 "수집이 죽었다"인지 운영자가 화면만 보고 알아야 한다.
+ * warm_uncollected가 입력 하나로 두 사실을 못 갈랐던 것과 같은 함정을 여기서 미리 막는다 —
+ * 그래서 **시도(lastRunAt)와 성공(lastOkAt)을 둘 다** 그린다. 서버도 둘을 따로 저장한다.
+ */
+function CollectStatus({
+  sources,
+  onToggle,
+}: {
+  sources: InfoSourceRow[];
+  onToggle: (id: string, enabled: boolean) => void;
+}) {
+  if (!sources.length) {
+    return (
+      <div className="rounded-lg border border-warn/25 bg-warn-soft/40 px-3.5 py-3 text-[13px]">
+        <span className="font-semibold text-warn">수집원이 하나도 없습니다.</span>{' '}
+        <span className="text-fg-muted">
+          이 화면이 빈 것은 정상입니다 — 아직 아무것도 수집하도록 등록하지 않았습니다. 등록 절차는{' '}
+          <code className="rounded bg-muted px-1">docs/INFO_HUB.md</code> 에 있습니다.
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      {sources.map((s) => {
+        const stale = daysSince(s.lastOkAt);
+        const never = !s.lastOkAt;
+        const failing = !!s.lastError;
+        return (
+          <div
+            key={s.id}
+            className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-lg border border-border bg-surface px-3 py-2 text-[12.5px]"
+          >
+            <CircleDot
+              className={`size-3.5 shrink-0 ${failing ? 'text-danger' : never ? 'text-fg-muted/50' : 'text-ok'}`}
+              strokeWidth={2.2}
+            />
+            <span className="font-medium">{s.label}</span>
+            {!s.enabled && <Badge tone="muted">꺼짐</Badge>}
+
+            {never ? (
+              <span className="text-fg-muted">아직 한 번도 성공하지 못했습니다</span>
+            ) : (
+              <span className="text-fg-muted">
+                마지막 성공 {ymd(s.lastOkAt)}
+                {stale !== null && stale >= 2 && <span className="text-warn"> · {stale}일 전</span>} · 신규 {s.lastCount}건
+              </span>
+            )}
+
+            {/* 🔴 실패 사유를 그대로 보여준다. "실패"만 적으면 그때부터 원인 찾기가 일이 된다.
+                시크릿은 서버가 가려서 보낸다(lib/info.ts redact). */}
+            {failing && (
+              <span className="w-full text-danger sm:w-auto">
+                ⚠ {s.lastRunAt ? ymd(s.lastRunAt) + ' 시도 실패' : '실패'} — {s.lastError}
+              </span>
+            )}
+
+            <Button variant="ghost" className="ml-auto h-7 px-2 text-[12px]" onClick={() => onToggle(s.id, !s.enabled)}>
+              {s.enabled ? '끄기' : '켜기'}
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InfoTab({
+  api,
+  kind,
+  onError,
+  flash,
+}: {
+  api: Api;
+  kind: 'grant' | 'community';
+  onError: (m: string) => void;
+  flash: (m: string) => void;
+}) {
+  const [items, setItems] = useState<InfoItemRow[]>([]);
+  const [sources, setSources] = useState<InfoSourceRow[]>([]);
+  const [expiredCount, setExpiredCount] = useState(0);
+  const [showExpired, setShowExpired] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const qs = new URLSearchParams({ kind });
+      if (showExpired) qs.set('expired', 'show');
+      if (unreadOnly) qs.set('unread', 'only');
+      const j = await api('info?' + qs.toString());
+      setItems(j.items ?? []);
+      setSources(j.sources ?? []);
+      setExpiredCount(j.expiredCount ?? 0);
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoaded(true);
+    }
+  }, [api, kind, showExpired, unreadOnly, onError]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const toggleRead = async (it: InfoItemRow) => {
+    try {
+      await api('info', { method: 'PATCH', body: JSON.stringify({ itemId: it.id, read: !it.readAt }) });
+      setItems((prev) =>
+        prev.map((x) => (x.id === it.id ? { ...x, readAt: x.readAt ? null : new Date().toISOString() } : x)),
+      );
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const toggleSource = async (id: string, enabled: boolean) => {
+    try {
+      await api('info', { method: 'PATCH', body: JSON.stringify({ sourceId: id, enabled }) });
+      flash(enabled ? '수집을 켰습니다' : '수집을 껐습니다');
+      await load();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const isGrant = kind === 'grant';
+
+  return (
+    <div className="space-y-4">
+      {/* 🔴 앱 선택기는 모든 화면에 항상 떠 있다. 이 배너가 없으면 운영자가
+          "지금 고른 앱 관련 공고"로 읽는다(INFO_HUB §1-1의 그 위험). */}
+      <div className="rounded-lg border border-border bg-muted/40 px-3.5 py-2.5 text-[12.5px] text-fg-muted">
+        <span className="font-semibold text-fg">이 화면은 앱과 무관합니다.</span> 위에서 앱을 바꿔도 목록은 그대로입니다 —
+        지원사업·커뮤니티 정보에는 앱 구분이 없습니다.
+      </div>
+
+      <CollectStatus sources={sources} onToggle={toggleSource} />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant={unreadOnly ? 'primary' : 'default'} onClick={() => setUnreadOnly((v) => !v)}>
+          안 읽음만
+        </Button>
+        {isGrant && (
+          <Button variant={showExpired ? 'primary' : 'default'} onClick={() => setShowExpired((v) => !v)}>
+            마감 지난 것 포함{expiredCount > 0 ? ' (' + expiredCount + ')' : ''}
+          </Button>
+        )}
+        <span className="ml-auto text-[12.5px] text-fg-muted">
+          {isGrant ? '마감 임박순' : '최신순'} · {items.length}건
+        </span>
+      </div>
+
+      {!loaded ? null : items.length === 0 ? (
+        <EmptyState icon={isGrant ? Landmark : MessagesSquare}>
+          {/* 🔴 빈 화면에서 "정상"과 "고장"을 가르는 문장. 위 수집 상태 줄과 짝이다. */}
+          표시할 항목이 없습니다. <b>위의 수집 상태를 먼저 보세요</b> — 마지막 성공이 오늘이면 진짜로 새 항목이 없는
+          것이고, 아니면 수집이 멈춘 것입니다.
+        </EmptyState>
+      ) : (
+        <div className="space-y-2">
+          {items.map((it) => {
+            const d = dday(it.endsAt);
+            const tone: 'muted' | 'accent' | 'warn' | 'danger' =
+              d === null ? 'muted' : d <= 3 ? 'danger' : d <= 7 ? 'warn' : 'accent';
+            return (
+              <div
+                key={it.id}
+                className={'rounded-lg border border-border bg-surface px-3.5 py-3 ' + (it.readAt ? 'opacity-55' : '')}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  {isGrant && (
+                    <Badge tone={tone}>
+                      {d === null
+                        ? '상시 · 마감 미상'
+                        : d < 0
+                          ? '마감 ' + -d + '일 지남'
+                          : d === 0
+                            ? '오늘 마감'
+                            : 'D-' + d}
+                    </Badge>
+                  )}
+                  {it.tags.slice(0, 2).map((t) => (
+                    <Badge key={t} tone="muted">
+                      {t}
+                    </Badge>
+                  ))}
+                  {it.author && <span className="text-[12px] text-fg-muted">@{it.author}</span>}
+                  <Button variant="ghost" className="ml-auto h-7 px-2 text-[12px]" onClick={() => void toggleRead(it)}>
+                    {it.readAt ? '안 읽음으로' : '읽음'}
+                  </Button>
+                </div>
+
+                <a
+                  href={it.url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="mt-1.5 flex items-start gap-1.5 text-[14px] font-medium hover:text-accent"
+                >
+                  <span>{it.title}</span>
+                  <ExternalLink className="mt-1 size-3.5 shrink-0 text-fg-muted/60" strokeWidth={2} />
+                </a>
+
+                {it.summary && <p className="mt-1 text-[12.5px] leading-relaxed text-fg-muted">{it.summary}</p>}
+
+                <div className="mt-1.5 text-[12px] text-fg-muted/80">
+                  {isGrant ? '접수 ' + ymd(it.startsAt) + ' ~ ' + (it.endsAt ? ymd(it.endsAt) : '미상') : ymd(it.publishedAt)}
+                  {' · '}
+                  {it.sourceId}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ⚠ 제목만 보고 거른 목록이라는 것을 화면이 말한다 —
+          제목만으로는 안 보이는 자격이 흔하다(울산 STAY-UP: "울산 외 지역 기업"이 필수였다). */}
+      {isGrant && items.length > 0 && (
+        <p className="text-[12px] text-fg-muted">
+          ⚠ 여기 보이는 것은 공고 목록입니다. <b>실제 자격(업력·지역·업종·매출)은 공고문에 있습니다</b> — 신청하기로 정한
+          것만 원문을 열어 확인하세요.
+        </p>
+      )}
     </div>
   );
 }

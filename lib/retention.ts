@@ -11,5 +11,13 @@ export const ANNOUNCEMENT_PURGE_AFTER_END_DAYS = 365;
  *  개인정보라기엔 얇지만(주체 id + 날짜) 목적이 끝나면 지운다는 원칙은 같게 적용한다. */
 export const ACTIVE_DAY_RETENTION_DAYS = 400;
 
+/** 정보 허브 — 지원사업 항목 보관기간(마감 후 며칠). 마감이 지난 공고는 참고 가치가 빠르게 사라진다.
+ *  ⚠ 마감(`ends_at`)이 **null**인 항목(상시·예산 소진시)은 이 규칙으로 지울 수 없다 —
+ *  "마감 없음"이 아니라 "마감을 모름"이라 기준점이 없다. 그건 아래 커뮤니티 규칙을 따른다. */
+export const INFO_GRANT_PURGE_AFTER_END_DAYS = 30;
+
+/** 정보 허브 — 커뮤니티 항목 및 마감을 모르는 항목의 보관기간(수집일 기준). */
+export const INFO_ITEM_RETENTION_DAYS = 90;
+
 /** now 기준 d일 전 시각. */
 export const daysAgo = (d: number, now: Date = new Date()): Date => new Date(now.getTime() - d * 24 * 60 * 60 * 1000);

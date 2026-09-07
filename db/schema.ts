@@ -5,7 +5,7 @@
 //
 // v1은 신원(subject)을 두지 않는다 — 공지는 읽기 전용 브로드캐스트, 문의는 단방향 익명이라 필요가 없다.
 // 쿠폰·광고제거를 붙일 때 `subjects` 테이블을 추가하고 tickets에 `subject_id`(nullable)를 **덧붙인다**(Expand-only, PLAN §8).
-import { pgTable, uuid, text, integer, boolean, timestamp, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, integer, boolean, timestamp, jsonb, index, uniqueIndex, primaryKey } from 'drizzle-orm/pg-core';
 
 // ── 앱 레지스트리 ── 공개 라우트 allowlist의 근거. 배구는 env(ANON_TICKET_PROJECTS)였으나 여기선 DB로 둔다
 //    — 앱을 하나 늘릴 때마다 재배포하지 않기 위해서.
@@ -295,6 +295,79 @@ export const subjectActiveDay = pgTable(
   ],
 );
 
+// ───────────────────────── 정보 허브 (Phase 14 · docs/INFO_HUB.md) ─────────────────────────
+//
+// 🔴 **이 두 표에는 `app_code`가 없다.** 지원사업 공고에 `myword`가 붙을 이유가 없기 때문이다.
+//    `CLAUDE.md`의 "관리자 write는 앱 스코프 필수" 규약의 **명시적 예외**이고, 그 근거는
+//    INFO_HUB.md §1-1에 있다 — 오염될 남의 앱이 없으므로 규약의 목적이 성립하지 않는다.
+// 🔴 앱(`/api/v1/*`)에는 내보내지 않는다. 독자는 운영자 한 명이다(§1-2).
+
+/** 수집원 정의. `apps` 테이블이 앱 allowlist인 것과 같은 역할 — **소스 추가에 재배포가 필요 없다.** */
+export const infoSources = pgTable('info_sources', {
+  /** 'bizinfo' | 'kstartup' | 'threads:<키워드>' | 'rss:<호스트>' */
+  id: text('id').primaryKey(),
+  /** 'grant' | 'community' — 콘솔 탭을 가르는 축. 🔴 생성 후 변경 금지(items에 복사되므로). */
+  kind: text('kind').notNull(),
+  label: text('label').notNull(),
+  /** 소스별 설정(키워드·분야 필터·RSS URL 등). 스키마 변경 없이 소스를 늘리기 위한 자리. */
+  config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+  enabled: boolean('enabled').notNull().default(true),
+
+  // ── 🔴 시도와 성공을 나눈다(§5-4) ──
+  // 하나만 두면 "오늘 돌았는데 0건"과 "오늘 실패해서 0건"이 같은 화면이 된다.
+  // `warm_uncollected`가 입력 하나로 두 사실을 못 갈랐던 것과 정확히 같은 함정이다.
+  /** 마지막 **시도** 시각. 실패해도 오른다. */
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+  /** 마지막 **성공** 시각. 실패하면 안 오른다 — 이 둘의 간격이 곧 "며칠째 못 가져오나"다. */
+  lastOkAt: timestamp('last_ok_at', { withTimezone: true }),
+  /** 마지막 실패 사유(짧게). 성공하면 null로 지운다. */
+  lastError: text('last_error'),
+  /** 마지막 회차에 **새로** 들어온 건수(중복 제외). */
+  lastCount: integer('last_count').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const infoItems = pgTable(
+  'info_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => infoSources.id, { onDelete: 'cascade' }),
+    /** `infoSources.kind`의 복사본. 목록 질의를 조인 없이 끝내려는 의도적 비정규화(§4-2). */
+    kind: text('kind').notNull(),
+    /**
+     * 출처의 고유 키. 없으면 **정규화한 URL**(추적 파라미터 제거)을 쓴다.
+     * 🔴 URL 원문을 그대로 키로 쓰면 `?utm_source=`만 다른 같은 공고가 **다른 항목**이 된다(§4-1).
+     */
+    externalId: text('external_id').notNull(),
+    title: text('title').notNull(),
+    url: text('url').notNull(),
+    /** 🔴 500자에서 자른다. 본문은 저장하지 않는다 — Supabase 무료 500MB(§5-3). */
+    summary: text('summary'),
+    /** 커뮤니티용. 지원사업은 null. */
+    author: text('author'),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    /** 지원사업 접수 시작. */
+    startsAt: timestamp('starts_at', { withTimezone: true }),
+    /** 지원사업 마감. 🔴 정렬과 알림의 축 — 놓쳐서 아픈 건 등록일이 아니라 마감이다. */
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    /** 분야·키워드. */
+    tags: text('tags').array().notNull().default([]),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull().defaultNow(),
+    /** 운영자가 읽음 표시한 시각. null = 안 읽음. */
+    readAt: timestamp('read_at', { withTimezone: true }),
+  },
+  (t) => [
+    // 🔴 이 표의 심장. 크론이 매일 같은 공고를 다시 보므로, 이게 없으면 매일 한 줄씩 늘어난다.
+    //    `subject_active_day`의 `(app, subject, day)` PK와 같은 장치 — 재실행이 안전해야
+    //    실패 복구가 "그냥 다시 돌린다"가 된다.
+    uniqueIndex('info_items_source_external_uq').on(t.sourceId, t.externalId),
+    index('info_items_kind_ends_idx').on(t.kind, t.endsAt), // 마감 임박순 정렬
+    index('info_items_kind_published_idx').on(t.kind, t.publishedAt), // 커뮤니티 최신순
+  ],
+);
+
 export type App = typeof apps.$inferSelect;
 export type AppSettings = typeof appSettings.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
@@ -304,3 +377,5 @@ export type AppAuthProvider = typeof appAuthProviders.$inferSelect;
 export type Entitlement = typeof entitlements.$inferSelect;
 export type PurchaseEvent = typeof purchaseEvents.$inferSelect;
 export type SubjectActiveDay = typeof subjectActiveDay.$inferSelect;
+export type InfoSource = typeof infoSources.$inferSelect;
+export type InfoItem = typeof infoItems.$inferSelect;

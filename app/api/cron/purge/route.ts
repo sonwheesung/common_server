@@ -4,10 +4,16 @@
 // **fail-closed** — 배포 환경에서 CRON_SECRET이 없으면 거부한다. 여기서 fail-open을 쓰면
 // 아무나 파기를 트리거할 수 있게 된다(파기는 되돌릴 수 없는 작업이라 관리자 라우트보다 더 엄해야 한다).
 import { NextResponse } from 'next/server';
-import { and, isNotNull, lt } from 'drizzle-orm';
+import { and, isNotNull, isNull, lt, or } from 'drizzle-orm';
 import { db } from '../../../../db';
-import { announcements, tickets } from '../../../../db/schema';
-import { ANNOUNCEMENT_PURGE_AFTER_END_DAYS, TICKET_RETENTION_DAYS, daysAgo } from '../../../../lib/retention';
+import { announcements, infoItems, tickets } from '../../../../db/schema';
+import {
+  ANNOUNCEMENT_PURGE_AFTER_END_DAYS,
+  INFO_GRANT_PURGE_AFTER_END_DAYS,
+  INFO_ITEM_RETENTION_DAYS,
+  TICKET_RETENTION_DAYS,
+  daysAgo,
+} from '../../../../lib/retention';
 import { purgeActiveDays } from '../../../../lib/activity';
 import { reportError } from '../../../../lib/observability';
 
@@ -44,9 +50,27 @@ export async function GET(req: Request) {
     // 활성 일자 — 경과 기준 delete만. 주체 id + 날짜뿐이라 엇은 정보지만 목적이 끝나면 지운다는 원칙은 같다.
     const purgedDays = await purgeActiveDays();
 
+    // 정보 허브(docs/INFO_HUB.md §5-3) — 파기 크론을 새로 만들지 않고 여기에 얹는다.
+    // 규칙이 둘인 이유: 마감이 있는 항목은 **마감 기준**으로, 마감을 모르는 항목(상시·예산소진시)과
+    // 커뮤니티 글은 **수집일 기준**으로 지운다. 마감 null을 "마감 없음"으로 보고 영구 보관하면 표가 계속 큰다.
+    const purgedInfo = await db
+      .delete(infoItems)
+      .where(
+        or(
+          and(isNotNull(infoItems.endsAt), lt(infoItems.endsAt, daysAgo(INFO_GRANT_PURGE_AFTER_END_DAYS))),
+          and(isNull(infoItems.endsAt), lt(infoItems.fetchedAt, daysAgo(INFO_ITEM_RETENTION_DAYS))),
+        ),
+      )
+      .returning({ id: infoItems.id });
+
     return NextResponse.json({
       ok: true,
-      purged: { tickets: purgedTickets.length, announcements: purgedAnns.length, activeDays: purgedDays },
+      purged: {
+        tickets: purgedTickets.length,
+        announcements: purgedAnns.length,
+        activeDays: purgedDays,
+        infoItems: purgedInfo.length,
+      },
     });
   } catch (e) {
     reportError(e, 'cron/purge');

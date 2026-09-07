@@ -101,6 +101,8 @@ BASE_URL=... node tools/_dv_sdk.ts                           # client/ 가 서�
 node tools/_dv_purchase.ts                                   # 결제 판정·상태전이(DB 불필요). BASE_URL 주면 라우트도
 node tools/_dv_activity.ts                                   # 활성 집계 순수함수(DB 불필요)
 node tools/_dv_contrast.ts                                   # 색 대비 — globals.css를 읽어 계산(DB 불필요)
+node tools/_dv_info.ts                                       # 정보 허브 순수계산. BASE_URL+ADMIN_TOKEN 주면 라우트·경로간 대조까지
+node --env-file=.env.local tools/seed_info.ts                # 정보 허브 수집원 등록(멱등 · enabled=false로 만든다)
 
 BASE_URL=... node tools/_e2e_heartbeat.ts                    # ⚠ 하트비트 성공 경로 — 행을 만들고 끝에 지운다
 ```
@@ -145,9 +147,10 @@ app/api/admin/*                  관리자 — Bearer ADMIN_TOKEN
   └ stats                        대시보드 지표 · 운영 알림(임계 판정은 서버) · 웹훅 오류 집계 · 배선 상태
   └ subjects                     사용자 목록(문의 수·구독 상태). provider_id 원문은 안 내려준다
                                  stats의 `activity`가 DAU/WAU/MAU·일별 추이·요일 평균을 들고 온다
-app/api/cron/purge               보관기간 파기(일 1회)
-app/api/cron/info                정보 허브 수집(일 1회 · KST 06:00) — 계획, `docs/INFO_HUB.md`
-app/api/admin/info               정보 허브 목록·소스 — ⚠ **앱 스코프 없음**(유일한 예외)
+app/api/cron/purge               보관기간 파기(일 1회) — 정보 허브 항목 파기도 여기 얹혀 있다
+app/api/cron/info                정보 허브 수집(일 1회 · KST 06:00) — `docs/INFO_HUB.md`
+app/api/admin/info               정보 허브 목록·소스 — ⚠ **앱 스코프 없음**(유일한 예외). 서버가 `appScoped:false`로 선언
+lib/info.ts                      수집 어댑터·URL 정규화·기간 파싱. 순수 계산이라 가드가 DB 없이 호출한다
 app/ops-4b7e21                   관리자 콘솔 (경로는 보안 장치가 아님 — 방어는 ADMIN_TOKEN)
 client/                          앱에 **복사해서** 쓰는 SDK (monorepo 안 씀)
 lib/                             admin·apps·auth·revenuecat·rcPull·entitlement·notify·ratelimit·retention·observability·afterSafe
