@@ -274,7 +274,11 @@ const KNOWN_SKIPS = ['route-cross-check', 'route-fail-closed'];
 
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다(CLAUDE.md).
 //   BASE_URL 없이 돌리면 순수 계산만 도므로 바닥이 그 개수다.
-const MIN_CHECKS = BASE && TOKEN ? 63 : 52; // 2026-09-07: RSS/Atom 파서 검사 17개 추가
+// 2026-09-07: RSS/Atom 파서 검사 17개 추가
+// 🔴 2026-09-09 정정: 실제로 55/67 이 도는데 바닥이 52/63 이었다 — **넷이 죽어도 안 걸리는 상태**였다.
+//    검사를 늘리면서 이 숫자를 안 올린 것이다. 다른 세 가드(_dv_purchase·_dv_activity·_dv_contrast)는
+//    실행수와 바닥이 정확히 같았고 이것만 밀려 있었다. **바닥은 실행수와 같아야 문다.**
+const MIN_CHECKS = BASE && TOKEN ? 67 : 55;
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {
