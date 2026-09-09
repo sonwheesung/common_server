@@ -23,3 +23,41 @@ next-env.d.ts
 
 # Claude Code 로컬 설정(개인 훅·권한) — 스킬(.claude/skills/)은 커밋한다
 .claude/settings.local.json
+
+# ─────────────────────────────────────────────────────────────────────
+# 🔴 올리면 안 되는 것 (2026-09-09 · 실제로 뚫리는지 시험해서 추가했다)
+#    아래 전부 `git check-ignore` 로 막히는 것을 확인했다.
+#    ⚠ 여기 있는 것은 "이 저장소에 지금 없다"가 아니라 "생겨도 안 올라간다"는 뜻이다.
+
+# 서명 키 — 잃으면 앱을 영구히 업데이트할 수 없고, 유출되면 앱을 뺏긴다
+*.jks
+*.keystore
+credentials/
+secrets/
+*service-account*.json
+google-services.json
+GoogleService-Info.plist
+
+# 개인키 · 인증서
+*.pem
+*.key
+*.p12
+*.p8
+id_rsa*
+*.ppk
+
+# 빌드 산출물 — 정본은 D:\builds (common/BUILD_ARTIFACTS.md)
+*.aab
+*.apk
+*.aar
+mapping.txt
+
+# 개인정보 · 사업자 실데이터 (common/BUSINESS_INFO.md 규약)
+BUSINESS_INFO.md
+business-docs/
+
+# 백업 파일 — git 이 그 역할을 한다
+*.bak
+*.bak.*
+*.bak-*
+*.bak2-*
