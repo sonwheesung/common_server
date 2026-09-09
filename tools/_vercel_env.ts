@@ -12,7 +12,12 @@ import { spawn } from 'node:child_process';
 
 // 배포에 필요한 것만. 빈 값(Upstash·Discord·Sentry 미설정)은 자동으로 건너뛴다 —
 // 빈 문자열을 올리면 "설정됨"으로 보여서 fail-open/no-op 판단이 흐려진다.
-const KEYS = ['DATABASE_URL', 'ADMIN_TOKEN', 'CRON_SECRET', 'SESSION_JWT_SECRET', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'DISCORD_TICKET_WEBHOOK_URL', 'DISCORD_TICKET_WEBHOOK_URL_MYWORD', 'DISCORD_TICKET_WEBHOOK_URL_LINKMEMO', 'DISCORD_TICKET_WEBHOOK_URL_IDEAREPOSITORY', 'SENTRY_DSN', 'RC_SANDBOX_GRANT', 'RC_SECRET_API_KEY', 'RC_SECRET_API_KEY_JOGAK'];
+//
+// 🔴 **운영에 있는 키가 여기 없으면 그 값은 이 경로로 복구되지 않는다.**
+//    2026-09-09 대조에서 둘이 빠져 있었다 — `DISCORD_TICKET_WEBHOOK_URL_JOGAK`(콘솔에서 직접 넣은 것)과
+//    `DATA_GO_KR_SERVICE_KEY`(정보 허브). 목록이 **운영 현황을 따라가지 못한 것**이고, 조용하다.
+//    ⚠ 새 env 를 Vercel 콘솔에서 직접 넣었으면 **여기에도 이름을 넣는다.**
+const KEYS = ['DATABASE_URL', 'ADMIN_TOKEN', 'CRON_SECRET', 'SESSION_JWT_SECRET', 'UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'DISCORD_TICKET_WEBHOOK_URL', 'DISCORD_TICKET_WEBHOOK_URL_MYWORD', 'DISCORD_TICKET_WEBHOOK_URL_LINKMEMO', 'DISCORD_TICKET_WEBHOOK_URL_IDEAREPOSITORY', 'DISCORD_TICKET_WEBHOOK_URL_JOGAK', 'SENTRY_DSN', 'RC_SANDBOX_GRANT', 'RC_SECRET_API_KEY', 'RC_SECRET_API_KEY_JOGAK', 'DATA_GO_KR_SERVICE_KEY'];
 
 const targetArg = process.argv.indexOf('--target');
 const target = targetArg >= 0 ? process.argv[targetArg + 1] : 'production';
