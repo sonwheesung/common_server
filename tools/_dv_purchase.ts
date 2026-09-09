@@ -20,6 +20,7 @@ import {
   type EntitlementView,
   type RcEvent,
 } from '../lib/revenuecat.ts';
+import { shouldNotifySubscription } from '../lib/notify.ts';
 import {
   PULL_COOLDOWN_SEC,
   PULL_FRESH_COOLDOWN_SEC,
@@ -492,6 +493,23 @@ console.log('\n[_dv_purchase] 상태 전이\n');
   }
 }
 
+// ── 8. 구독 알림 대상 판정 (2026-09-09) ──
+// 🔴 이 판정이 틀리면 **두 방향으로 아프다**: 넓으면 샌드박스 테스트마다 채널이 시끄러워지고,
+//   좁으면 해지를 모른 채 지나간다. 그래서 **보낼 것과 안 보낼 것을 둘 다 잰다**
+//   (한쪽만 재면 반대쪽이 무너진다 — 2026-09-08에 배운 것).
+{
+  console.log('\n[_dv_purchase] 구독 알림 대상\n');
+  for (const t of ['INITIAL_PURCHASE', 'CANCELLATION', 'EXPIRATION', 'REFUND']) {
+    check(`알린다: ${t}`, shouldNotifySubscription(t));
+  }
+  // 🚫 빼기로 한 것들. RENEWAL 은 사용자가 요청하지 않았고, PULL 은 우리가 스스로 당긴 동기화다.
+  for (const t of ['RENEWAL', 'PULL', 'BILLING_ISSUE', 'PRODUCT_CHANGE', 'TRANSFER', 'UNCANCELLATION']) {
+    check(`안 알린다: ${t}`, !shouldNotifySubscription(t));
+  }
+  check('소문자로 와도 판정한다', shouldNotifySubscription('initial_purchase'));
+  check('빈 타입은 안 알린다', !shouldNotifySubscription(''));
+}
+
 // ── 라우트(선택) ──
 if (BASE) {
   console.log('\n[_dv_purchase] 라우트 — ' + BASE + '\n');
@@ -533,7 +551,7 @@ if (BASE) {
 // ⚠ 검사를 늘렸으면 이 숫자도 같이 올린다. 귀찮은 게 요점이다 —
 //   안 올리면 다음에 섹션이 하나 죽어도 바닥에 안 걸린다.
 // 사유: RC 키가 env 에 있으면 오히려 늘어난다(+5)
-const MIN_CHECKS = 54;
+const MIN_CHECKS = 66;   // 2026-09-09 구독 알림 대상 판정 12개 추가 (54 → 66). REFUND 를 안알림→알림으로 옮겨 개수는 그대로
 {
   const ran = pass + fail;
   if (ran < MIN_CHECKS) {

@@ -28,6 +28,9 @@ export interface RcEvent {
   cancel_reason?: string | null;
   transferred_from?: string[] | null;
   transferred_to?: string[] | null;
+  /** 표시 전용(2026-09-09 구독 알림). 판정에는 **쓰지 않는다** — 금액은 통화·환불로 부호가 바뀐다. */
+  price?: number | null;
+  currency?: string | null;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -14,6 +14,7 @@ import { normalizeAppCode } from '../../../../../lib/apps';
 import { applyEvent, pullEntitlements } from '../../../../../lib/entitlement';
 import { decideEvent, verifyWebhookAuth, type RcEvent } from '../../../../../lib/revenuecat';
 import { afterSafe } from '../../../../../lib/afterSafe';
+import { notifySubscription, shouldNotifySubscription } from '../../../../../lib/notify';
 import { reportError } from '../../../../../lib/observability';
 
 export const dynamic = 'force-dynamic';
@@ -51,6 +52,39 @@ export async function POST(req: Request, ctx: { params: Promise<{ app: string }>
       afterSafe(async () => {
         await pullEntitlements(appCode, subjectId, { fresh: true }); // 짧은 쿨다운 — 아니면 웹훅마다 걸러진다
       });
+    }
+
+    // 디스코드 통지 — 구독 시작·해지 예약·구독 종료 셋만(2026-09-09 사용자 결정).
+    // 🔴 **`applied`일 때만 보낸다.** 이 조건이 알림의 전부다:
+    //   · `deduped`  — RC는 응답이 늦으면 같은 이벤트를 재전송한다. 걸러야 알림이 두 번 안 온다.
+    //   · `ignored`  — 샌드박스 테스트·모르는 키. 결제 테스트를 돌릴 때마다 채널이 시끄러워진다.
+    //   · `rejected` — 미해석 주체. 알려봐야 사장님이 할 수 있는 게 없다.
+    //   즉 **DB에 실제로 반영된 변화만** 알린다 — 화면(관리자 콘솔)과 알림이 어긋나지 않는다.
+    if (result.status === 'applied' && shouldNotifySubscription(event.type ?? '')) {
+      afterSafe(() =>
+        notifySubscription({
+          type: event.type ?? '',
+          appCode,
+          appName: app.name,
+          productId: decision.productId ?? event.product_id ?? null,
+          entitlementKey: decision.key ?? null,
+          periodType: event.period_type ?? null,
+          price: event.price ?? null,
+          currency: event.currency ?? null,
+          // 🔴 만료시각은 **판정 결과 → 원문** 순으로 본다. 판정만 보면 해지 알림의 핵심 숫자가 빈다:
+          //   `CANCELLATION`·`REFUND`는 만료를 **안 건드리는** 이벤트라(mode:'none') decision에 expiresAt이 없다.
+          //   그런데 원문에는 실려 온다(2026-08-20 실측: decision=null · 원문=2026-08-20T10:13:40).
+          //   → 이건 **표시 전용 폴백**이다. 판정·DB 기록은 그대로 decision을 쓴다(둘을 섞으면 안 된다).
+          expiresAt:
+            decision.graceUntil ??
+            decision.expiresAt ??
+            (typeof event.expiration_at_ms === 'number' && event.expiration_at_ms > 0
+              ? new Date(event.expiration_at_ms)
+              : null),
+          cancelReason: event.cancel_reason ?? null,
+          environment: decision.environment ?? event.environment ?? null,
+        }),
+      );
     }
 
     // 전부 200이다. 어떻게 처리됐는지는 body와 감사행(purchase_events)에 남는다.
