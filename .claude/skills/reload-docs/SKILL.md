@@ -30,7 +30,8 @@ description: Re-read this project's design docs (CLAUDE.md spine + docs/NEXT.md 
 1.5. **★ 공용 문서 재적재 (`C:\project\common`) — 항상** — 여러 프로젝트가 공유하는 기준 문서를 함께 읽는다.
    `C:\project\common` 아래 **콘텐츠 `.md` 전부**(`ls C:/project/common/*.md` 로 목록 확인 후 Read):
    - `BUSINESS_INFO.md` — 사업자·서비스 정보 단일 출처. **커밋 금지 파일.**
-   - `COMMIT_CONVENTION.md` — 커밋 메시지 규약(`YYMMDD :: [태그] 한국어 요약`).
+   - `COMMIT_CONVENTION.md` — 커밋 메시지 규약. 🔴 **형식을 여기 베껴 적지 않는다** — 이 스킬은
+     **컴팩트마다 컨텍스트에 재주입**되므로, 낡은 값이 매번 되살아나 정본을 이긴다(2026-09-09 LinkMemo 발견).
    - **`PLAY_CONSOLE_STATUS.md`** — 지금 무엇이 어느 트랙에 나가 있나. **§1.8이 이걸 갱신한다.**
    - `CLOSED_TESTING.md` · `DOC_SYSTEM.md` · `GLOBAL_DATA_COMPLIANCE.md` · `PLAY_RELEASE_AUTOMATION.md` 등.
    - `.claude/`(스킬·에이전트 정의)는 도구라 제외 — 호출 시 로드된다.
